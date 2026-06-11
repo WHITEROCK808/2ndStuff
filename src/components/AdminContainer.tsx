@@ -1489,7 +1489,7 @@ export default function AdminContainer({
                   {"ADMIN_PASSCODE=YourSecurePassword"}
                 </pre>
                 <p className="text-[10px] text-neutral-400">
-                  （若未設定則系統內部登入密碼將預設為 <code>admin</code>，此設計使得整串密碼未出現在任何前端靜態 HTML / JS 檔案中）
+                  正式環境若未設定此變數，管理員登入會保持停用，避免預設密碼造成未授權存取。
                 </p>
               </div>
 

@@ -13,7 +13,7 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const DB_FILE = path.join(process.cwd(), "db.json");
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
-const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || "admin";
+const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || (IS_PRODUCTION ? "" : "admin");
 const ADMIN_TOTP_SECRET = process.env.ADMIN_TOTP_SECRET || "";
 const ADMIN_SESSION_COOKIE = "bob_admin_session";
 const ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
@@ -24,8 +24,8 @@ const ADMIN_SESSION_SECRET =
     .update(`${ADMIN_PASSCODE}:${ADMIN_TOTP_SECRET}:bobs-treasure-vault`)
     .digest("hex");
 
-if (IS_PRODUCTION && ADMIN_PASSCODE === "admin") {
-  console.warn("ADMIN_PASSCODE is using the insecure default value. Configure it in Zeabur before going live.");
+if (IS_PRODUCTION && !ADMIN_PASSCODE) {
+  console.warn("ADMIN_PASSCODE is not configured. Production admin login is disabled.");
 }
 
 // Increase JSON limit to support base64 receipt uploads
@@ -681,8 +681,16 @@ app.post("/api/admin/verify", (req, res) => {
     return res.status(400).json({ success: false, error: "請輸入登入密碼或動態驗證碼。" });
   }
 
+  if (!ADMIN_PASSCODE && !ADMIN_TOTP_SECRET) {
+    return res.status(503).json({
+      success: false,
+      configurationRequired: true,
+      error: "管理員登入尚未設定，請先在 Zeabur 配置 ADMIN_PASSCODE 或 ADMIN_TOTP_SECRET。",
+    });
+  }
+
   // Verify standard passcode
-  if (secureStringEqual(String(passcode), ADMIN_PASSCODE)) {
+  if (ADMIN_PASSCODE && secureStringEqual(String(passcode), ADMIN_PASSCODE)) {
     setAdminSessionCookie(res);
     return res.json({ success: true, method: "password" });
   }
