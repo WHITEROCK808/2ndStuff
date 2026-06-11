@@ -15,6 +15,22 @@ import {
   createProduct, updateProduct, deleteProduct, updateOrder, updateSettings, createOrder
 } from "./lib/api";
 
+const DEFAULT_FALLBACK_SETTINGS: SystemSettings = {
+  bankName: "Cathay United Bank (國泰世華銀行)",
+  bankCode: "013",
+  accountNumber: "6995-1200-8847-1112",
+  accountName: "LU CHEN-PO (BOB)",
+  depositPercent: 30,
+  discountPercent: 5,
+  balanceDueDays: 3,
+  shippingPolicy: "本專案提供高防震專業包裝與配送，大台北地區亦可配合約看...",
+  returnPolicy: "本站商品均為個人珍藏之老文物，出貨後不接受無理由退換貨。",
+  returnPolicyDetail: "",
+  shippingPolicyDetail: "",
+  paymentPolicyDetail: "",
+  servicePolicy: ""
+};
+
 export default function App() {
   // Navigation Routing States
   const [currentView, setCurrentView] = useState<string>("home"); // home, detail, checkout, status, contact, terms, admin
@@ -50,19 +66,20 @@ export default function App() {
   const syncDatabase = async () => {
     try {
       const [prodData, catData, orderData, custData, settData] = await Promise.all([
-        getProducts(),
-        getCategories(),
-        getOrders(),
-        getCustomers(),
-        getSettings(),
+        getProducts().catch((e) => { console.error("Error fetching products:", e); return []; }),
+        getCategories().catch((e) => { console.error("Error fetching categories:", e); return []; }),
+        getOrders().catch((e) => { console.error("Error fetching orders:", e); return []; }),
+        getCustomers().catch((e) => { console.error("Error fetching customers:", e); return []; }),
+        getSettings().catch((e) => { console.error("Error fetching settings:", e); return null; }),
       ]);
-      setProducts(prodData);
-      setCategories(catData);
-      setOrders(orderData);
-      setCustomers(custData);
-      setSettings(settData);
+      setProducts(prodData || []);
+      setCategories(catData || []);
+      setOrders(orderData || []);
+      setCustomers(custData || []);
+      setSettings(settData || DEFAULT_FALLBACK_SETTINGS);
     } catch (error) {
       console.error("Database connection syncing failed:", error);
+      setSettings(DEFAULT_FALLBACK_SETTINGS);
     } finally {
       setIsLoading(false);
     }

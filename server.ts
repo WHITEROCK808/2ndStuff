@@ -10,7 +10,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const DB_FILE = path.join(process.cwd(), "db.json");
 
 // Increase JSON limit to support base64 receipt uploads
@@ -737,7 +737,13 @@ async function startServer() {
     app.use(vite.middlewares);
     console.log("Vite dev middleware mounted successfully in server.");
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    let distPath = path.join(process.cwd(), "dist");
+    if (!fs.existsSync(path.join(distPath, "index.html"))) {
+      distPath = __dirname;
+      if (!fs.existsSync(path.join(distPath, "index.html"))) {
+        distPath = path.join(__dirname, "../dist");
+      }
+    }
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
