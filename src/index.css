@@ -1,0 +1,212 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "SF Pro Display", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", "Fira Code", monospace;
+  
+  --color-primary-apple: #007AFF;
+  --color-bg-apple: #F5F5F7;
+  --color-text-apple: #1D1D1F;
+  --color-text-secondary: #6E6E73;
+  --color-success-apple: #34C759;
+  --color-warning-apple: #FF9F0A;
+  --color-danger-apple: #FF3B30;
+}
+
+@layer base {
+  body {
+    background-color: #F5F5F7;
+    color: #1D1D1F;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  body.dark-mode {
+    background-color: #0A0A0C;
+    color: #F5F5F7;
+  }
+}
+
+/* Advanced Shimmering & Liquid Light Wave Effects */
+@keyframes ambientGlowFlow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.ambient-light-flow {
+  background: linear-gradient(-45deg, 
+    rgba(59, 130, 246, 0.12), 
+    rgba(139, 92, 246, 0.10), 
+    rgba(217, 119, 6, 0.08), 
+    rgba(16, 185, 129, 0.06), 
+    rgba(59, 130, 246, 0.12)
+  );
+  background-size: 300% 300%;
+  animation: ambientGlowFlow 22s ease infinite;
+}
+
+@keyframes laserRay {
+  0% {
+    transform: translateX(-200%) skewX(-30deg);
+  }
+  30% {
+    transform: translateX(-200%) skewX(-30deg);
+  }
+  70% {
+    transform: translateX(250%) skewX(-30deg);
+  }
+  100% {
+    transform: translateX(250%) skewX(-30deg);
+  }
+}
+
+.laser-sheen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.15) 45%,
+    rgba(255, 255, 255, 0.3) 50%,
+    rgba(255, 255, 255, 0.15) 55%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  filter: blur(1.5px);
+  animation: laserRay 12s cubic-bezier(0.25, 1, 0.5, 1) infinite;
+  pointer-events: none;
+}
+
+.dark-mode .laser-sheen {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.06) 45%,
+    rgba(255, 255, 255, 0.15) 50%,
+    rgba(255, 255, 255, 0.06) 55%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+@keyframes floatAura {
+  0%, 100% {
+    transform: translate(0px, 0px) scale(1) rotate(0deg);
+    filter: blur(100px) saturate(1);
+  }
+  33% {
+    transform: translate(50px, -60px) scale(1.15) rotate(120deg);
+    filter: blur(115px) saturate(1.2);
+  }
+  66% {
+    transform: translate(-40px, 40px) scale(0.9) rotate(240deg);
+    filter: blur(90px) saturate(0.9);
+  }
+}
+
+.animate-float-aura-1 {
+  animation: floatAura 28s ease-in-out infinite;
+}
+
+.animate-float-aura-2 {
+  animation: floatAura 34s ease-in-out infinite reverse;
+}
+
+.animate-float-aura-3 {
+  animation: floatAura 24s ease-in-out infinite;
+}
+
+/* Custom Utilities for Premium Apple / Glassmorphism Aesthetic */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.03);
+}
+
+.dark-mode .glass-panel {
+  background: rgba(20, 20, 25, 0.76);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+}
+
+.glass-nav {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.dark-mode .glass-nav {
+  background: rgba(10, 10, 12, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.safari-scroller::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.safari-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.safari-scroller::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 99px;
+}
+
+.dark-mode .safari-scroller::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* Premium micro-interactions */
+.apple-button {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.apple-button:active {
+  transform: scale(0.97);
+}
+
+.iphone-bezel {
+  box-shadow: 0 0 0 10px #000, 0 20px 40px rgba(0, 0, 0, 0.2);
+  border-radius: 40px;
+}
+
+/* Custom animation classes */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Bob's Treasure Vault",
+  "description": "A premium second-hand marketplace curated by Bob with a high-fidelity Apple-like direct purchasing flow.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
