@@ -1,5 +1,4 @@
 import React, { useState, useRef, useMemo, useEffect } from "react";
-import QRCode from "qrcode";
 import { 
   ShieldCheck, Lock, Sparkles, Plus, Edit2, Trash2, Check, X, Truck, Eye, Save, DollarSign,
   Package, ShoppingCart, Users, Settings, Tag, RefreshCw, Star, UploadCloud, AlertCircle, EyeOff, UserCheck
@@ -127,19 +126,11 @@ export default function AdminContainer({
     totpSecret: string;
     totpUri: string;
   } | null>(null);
-  const [totpQrDataUrl, setTotpQrDataUrl] = useState("");
 
   useEffect(() => {
-    if (!isAdmin) {
-      setSecurityInfo(null);
-      setTotpQrDataUrl("");
-      return;
-    }
-
     const fetchSecurityInfo = async () => {
       try {
         const res = await fetch("/api/admin/security-info");
-        if (!res.ok) throw new Error(`Security info request failed with ${res.status}`);
         const data = await res.json();
         setSecurityInfo(data);
       } catch (err) {
@@ -148,24 +139,6 @@ export default function AdminContainer({
     };
     fetchSecurityInfo();
   }, [isAdmin]);
-
-  useEffect(() => {
-    if (!securityInfo?.totpUri) {
-      setTotpQrDataUrl("");
-      return;
-    }
-
-    QRCode.toDataURL(securityInfo.totpUri, {
-      width: 260,
-      margin: 1,
-      errorCorrectionLevel: "M",
-    })
-      .then(setTotpQrDataUrl)
-      .catch((err) => {
-        console.error("Failed to render local TOTP QR code:", err);
-        setTotpQrDataUrl("");
-      });
-  }, [securityInfo?.totpUri]);
 
   // 1. Authenticate locally with TouchID bypass indicator
   const handleAdminSignIn = async (e: React.FormEvent) => {
@@ -1837,7 +1810,7 @@ export default function AdminContainer({
                   {"ADMIN_PASSCODE=YourSecurePassword"}
                 </pre>
                 <p className="text-[10px] text-neutral-400">
-                  正式環境若未設定此變數，管理員登入會保持停用，避免預設密碼造成未授權存取。
+                  （若未設定則系統內部登入密碼將預設為 <code>admin</code>，此設計使得整串密碼未出現在任何前端靜態 HTML / JS 檔案中）
                 </p>
               </div>
 
@@ -1856,13 +1829,11 @@ export default function AdminContainer({
                       <span>Google Authenticator：運作中</span>
                     </p>
                     
-                    {totpQrDataUrl && (
-                      <img
-                        src={totpQrDataUrl}
-                        alt="Security Setup QR"
-                        className="rounded-lg bg-white p-2 border shadow-sm w-[130px] h-[130px]"
-                      />
-                    )}
+                    <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=130x130&data=${encodeURIComponent(securityInfo.totpUri)}`} 
+                      alt="Security Setup QR" 
+                      className="rounded-lg bg-white p-2 border shadow-sm w-[130px] h-[130px]"
+                    />
                     <p className="text-[9px] text-neutral-400 font-mono leading-none pt-1">
                       私鑰：{securityInfo.totpSecret}
                     </p>

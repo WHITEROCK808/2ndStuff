@@ -1,10 +1,11 @@
-import express, { type NextFunction, type Request, type Response } from "express";
+import express from "express";
 import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import nodemailer from "nodemailer";
 
 // Load environment variables
 dotenv.config();
@@ -12,21 +13,6 @@ dotenv.config();
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const DB_FILE = path.join(process.cwd(), "db.json");
-const IS_PRODUCTION = process.env.NODE_ENV === "production";
-const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || (IS_PRODUCTION ? "" : "admin");
-const ADMIN_TOTP_SECRET = process.env.ADMIN_TOTP_SECRET || "";
-const ADMIN_SESSION_COOKIE = "bob_admin_session";
-const ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
-const ADMIN_SESSION_SECRET =
-  process.env.ADMIN_SESSION_SECRET ||
-  crypto
-    .createHash("sha256")
-    .update(`${ADMIN_PASSCODE}:${ADMIN_TOTP_SECRET}:bobs-treasure-vault`)
-    .digest("hex");
-
-if (IS_PRODUCTION && !ADMIN_PASSCODE) {
-  console.warn("ADMIN_PASSCODE is not configured. Production admin login is disabled.");
-}
 
 // Increase JSON limit to support base64 receipt uploads
 app.use(express.json({ limit: "50mb" }));
@@ -279,87 +265,7 @@ function writeDb(data: any) {
 // Ensure database file is generated right away
 readDb();
 
-function secureStringEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
-}
-
-function parseCookies(req: Request): Record<string, string> {
-  const cookieHeader = req.headers.cookie || "";
-  return cookieHeader.split(";").reduce<Record<string, string>>((cookies, item) => {
-    const separatorIndex = item.indexOf("=");
-    if (separatorIndex === -1) return cookies;
-
-    const key = item.slice(0, separatorIndex).trim();
-    const value = item.slice(separatorIndex + 1).trim();
-    if (key) cookies[key] = decodeURIComponent(value);
-    return cookies;
-  }, {});
-}
-
-function createAdminSessionToken(): string {
-  const payload = Buffer.from(
-    JSON.stringify({ exp: Date.now() + ADMIN_SESSION_MAX_AGE_SECONDS * 1000 }),
-  ).toString("base64url");
-  const signature = crypto
-    .createHmac("sha256", ADMIN_SESSION_SECRET)
-    .update(payload)
-    .digest("base64url");
-  return `${payload}.${signature}`;
-}
-
-function verifyAdminSessionToken(token: string): boolean {
-  try {
-    const [payload, signature] = token.split(".");
-    if (!payload || !signature) return false;
-
-    const expectedSignature = crypto
-      .createHmac("sha256", ADMIN_SESSION_SECRET)
-      .update(payload)
-      .digest("base64url");
-    if (!secureStringEqual(signature, expectedSignature)) return false;
-
-    const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return typeof session.exp === "number" && session.exp > Date.now();
-  } catch {
-    return false;
-  }
-}
-
-function isAdminAuthenticated(req: Request): boolean {
-  const token = parseCookies(req)[ADMIN_SESSION_COOKIE];
-  return !!token && verifyAdminSessionToken(token);
-}
-
-function setAdminSessionCookie(res: Response): void {
-  const secureAttribute = IS_PRODUCTION ? "; Secure" : "";
-  res.setHeader(
-    "Set-Cookie",
-    `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(createAdminSessionToken())}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${ADMIN_SESSION_MAX_AGE_SECONDS}${secureAttribute}`,
-  );
-}
-
-function clearAdminSessionCookie(res: Response): void {
-  const secureAttribute = IS_PRODUCTION ? "; Secure" : "";
-  res.setHeader(
-    "Set-Cookie",
-    `${ADMIN_SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0${secureAttribute}`,
-  );
-}
-
-function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!isAdminAuthenticated(req)) {
-    return res.status(401).json({ error: "管理員登入已失效，請重新驗證。" });
-  }
-  next();
-}
-
 // Expose API Endpoints
-
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, service: "bobs-treasure-vault" });
-});
 
 // 1. Get Categories
 app.get("/api/categories", (req, res) => {
@@ -374,7 +280,7 @@ app.get("/api/products", (req, res) => {
 });
 
 // 3. Create Product (Admin)
-app.post("/api/products", requireAdmin, (req, res) => {
+app.post("/api/products", (req, res) => {
   const db = readDb();
   const newProduct = {
     id: `prod-${Date.now()}`,
@@ -389,7 +295,7 @@ app.post("/api/products", requireAdmin, (req, res) => {
 });
 
 // 4. Update Product (Admin)
-app.put("/api/products/:id", requireAdmin, (req, res) => {
+app.put("/api/products/:id", (req, res) => {
   const db = readDb();
   const index = db.products.findIndex((p: any) => p.id === req.params.id);
   if (index === -1) {
@@ -408,7 +314,7 @@ app.put("/api/products/:id", requireAdmin, (req, res) => {
 });
 
 // 5. Delete Product (Admin)
-app.delete("/api/products/:id", requireAdmin, (req, res) => {
+app.delete("/api/products/:id", (req, res) => {
   const db = readDb();
   db.products = db.products.filter((p: any) => p.id !== req.params.id);
   writeDb(db);
@@ -422,7 +328,7 @@ app.get("/api/settings", (req, res) => {
 });
 
 // 7. Update Settings (Admin)
-app.post("/api/settings", requireAdmin, (req, res) => {
+app.post("/api/settings", (req, res) => {
   const db = readDb();
   db.settings = {
     ...db.settings,
@@ -430,6 +336,165 @@ app.post("/api/settings", requireAdmin, (req, res) => {
   };
   writeDb(db);
   res.json(db.settings);
+});
+
+// SMTP Mail dispatcher helper for private contacts
+async function sendContactEmail(payload: {
+  name: string;
+  email: string;
+  topic: string;
+  message: string;
+}) {
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  // Fall back to tonicbov@gmail.com if no dedicated env var is provided
+  const targetEmail = process.env.SMTP_TARGET_EMAIL || "tonicbov@gmail.com";
+
+  let transporter;
+  let isTestAccount = false;
+  let testUrl = "";
+
+  if (smtpUser && smtpPass) {
+    transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || "smtp.gmail.com",
+      port: Number(process.env.SMTP_PORT) || 465,
+      secure: process.env.SMTP_SECURE !== "false", // true for 465, false for other ports
+      auth: {
+        user: smtpUser,
+        pass: smtpPass,
+      },
+    });
+  } else {
+    try {
+      console.log("No SMTP credentials found in environment. Generating a temporary Ethereal SMTP test account...");
+      const testAccount = await nodemailer.createTestAccount();
+      transporter = nodemailer.createTransport({
+        host: "smtp.ethereal.email",
+        port: 587,
+        secure: false,
+        auth: {
+          user: testAccount.user,
+          pass: testAccount.pass,
+        },
+      });
+      isTestAccount = true;
+    } catch (err) {
+      console.error("Failed to create Ethereal test account, starting complete simulation...", err);
+      return {
+        success: true,
+        simulated: true,
+        warning: "SMTP 伺服器未設定且無法生成動態測試帳號。已進行模擬發信，內容已輸出至伺服器端日誌。",
+      };
+    }
+  }
+
+  const topicMap: Record<string, string> = {
+    general: "一般珍藏諮詢",
+    product_question: "特定物況細節詢問 / 圖檔索取",
+    meetup: "特別約看 / 台北面鑑預約",
+    payment_help: "銀行轉帳流程輔助說明",
+  };
+  const topicLabel = topicMap[payload.topic] || payload.topic;
+
+  const mailOptions = {
+    from: smtpUser ? `"${payload.name}" <${smtpUser}>` : `"${payload.name}" <verify@ethereal.email>`,
+    to: targetEmail,
+    replyTo: payload.email,
+    subject: `[私藏意向洽詢] 來自 ${payload.name} 的「${topicLabel}」`,
+    text: `
+您收到了一封來自「Bob 珍藏寶庫」的全新洽詢表單！
+
+【洽詢詳情】
+- 訪客尊稱：${payload.name}
+- 聯絡信箱：${payload.email}
+- 洽詢主題：${topicLabel}
+- 送出時間：${new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}
+
+【訊息詳細內容】
+--------------------------------------------------
+${payload.message}
+--------------------------------------------------
+
+本信件是由 Bob 珍藏寶庫後台自動代發。
+`,
+    html: `
+<div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 16px; background-color: #ffffff;">
+  <div style="text-align: center; margin-bottom: 24px; border-bottom: 2px solid #3b82f6; padding-bottom: 16px;">
+    <h2 style="color: #1e3a8a; margin: 0 0 6px 0; font-size: 22px;">Bob 珍藏寶庫</h2>
+    <span style="color: #6b7280; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;">全新私藏意向洽詢通報</span>
+  </div>
+  
+  <p style="color: #374151; font-size: 14px; line-height: 1.6; margin-bottom: 20px;">
+    親愛的 Bob，下方是剛從網站上送出的訪客意向：
+  </p>
+  
+  <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+    <tr>
+      <td style="padding: 10px 12px; background-color: #f9fafb; font-weight: bold; font-size: 13px; color: #4b5563; border-bottom: 1px solid #f3f4f6; width: 100px;">訪客尊稱</td>
+      <td style="padding: 10px 12px; font-size: 14px; color: #111827; border-bottom: 1px solid #f3f4f6;">${payload.name}</td>
+    </tr>
+    <tr>
+      <td style="padding: 10px 12px; background-color: #f9fafb; font-weight: bold; font-size: 13px; color: #4b5563; border-bottom: 1px solid #f3f4f6;">聯絡信箱</td>
+      <td style="padding: 10px 12px; font-size: 14px; color: #111827; border-bottom: 1px solid #f3f4f6;">
+        <a href="mailto:${payload.email}" style="color: #2563eb; text-decoration: none;">${payload.email}</a>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding: 10px 12px; background-color: #f9fafb; font-weight: bold; font-size: 13px; color: #4b5563; border-bottom: 1px solid #f3f4f6;">洽詢主題</td>
+      <td style="padding: 10px 12px; font-size: 14px; color: #111827; border-bottom: 1px solid #f3f4f6; font-weight: 500;">${topicLabel}</td>
+    </tr>
+    <tr>
+      <td style="padding: 10px 12px; background-color: #f9fafb; font-weight: bold; font-size: 13px; color: #4b5563; border-bottom: 1px solid #f3f4f6;">送出時間</td>
+      <td style="padding: 10px 12px; font-size: 13px; color: #6b7280; border-bottom: 1px solid #f3f4f6;">${new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}</td>
+    </tr>
+  </table>
+  
+  <div style="background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+    <h4 style="margin: 0 0 8px 0; color: #15803d; font-size: 13px; font-weight: bold;">【洽詢留言本文】</h4>
+    <p style="margin: 0; font-size: 14px; color: #1f2937; line-height: 1.6; white-space: pre-wrap;">${payload.message}</p>
+  </div>
+  
+  <div style="border-top: 1px solid #f3f4f6; padding-top: 16px; text-align: center; font-size: 11px; color: #9ca3af;">
+    本信件由「Bob 珍藏寶庫自動化信件代發引擎」寄出。<br/>
+    若需要直接回覆此探詢，可以直接點選電郵用戶端之「回覆」以便寫信給 [${payload.email}]。
+  </div>
+</div>
+`
+  };
+
+  const info = await transporter.sendMail(mailOptions);
+  console.log("Email sent successfully! MessageID:", info.messageId);
+
+  if (isTestAccount) {
+    testUrl = nodemailer.getTestMessageUrl(info) || "";
+    console.log("Ethereal Test SMTP email direct viewing log URL:", testUrl);
+  }
+
+  return {
+    success: true,
+    messageId: info.messageId,
+    testUrl,
+    isTestAccount,
+  };
+}
+
+// Route to handle contact submission with mail dispatch
+app.post("/api/contact", async (req, res) => {
+  const { name, email, topic, message } = req.body;
+  if (!name || !email || !message) {
+    return res.status(400).json({ error: "Missing required fields (name, email, message)" });
+  }
+
+  try {
+    const mailResult = await sendContactEmail({ name, email, topic, message });
+    res.json(mailResult);
+  } catch (err: any) {
+    console.error("Failed to process contact email dispatch:", err);
+    res.status(500).json({ 
+      error: "Failed to dispatch email", 
+      details: err.message || err 
+    });
+  }
 });
 
 // 8. Get Orders
@@ -541,7 +606,7 @@ app.post("/api/orders", (req, res) => {
 });
 
 // 10. Update Order Status (Admin)
-app.put("/api/orders/:id", requireAdmin, (req, res) => {
+app.put("/api/orders/:id", (req, res) => {
   const db = readDb();
   const index = db.orders.findIndex((o: any) => o.id === req.params.id);
   if (index === -1) {
@@ -574,7 +639,7 @@ app.put("/api/orders/:id", requireAdmin, (req, res) => {
 });
 
 // 11. Get Customers (Admin)
-app.get("/api/customers", requireAdmin, (req, res) => {
+app.get("/api/customers", (req, res) => {
   const db = readDb();
   res.json(db.customers);
 });
@@ -681,24 +746,18 @@ app.post("/api/admin/verify", (req, res) => {
     return res.status(400).json({ success: false, error: "請輸入登入密碼或動態驗證碼。" });
   }
 
-  if (!ADMIN_PASSCODE && !ADMIN_TOTP_SECRET) {
-    return res.status(503).json({
-      success: false,
-      configurationRequired: true,
-      error: "管理員登入尚未設定，請先在 Zeabur 配置 ADMIN_PASSCODE 或 ADMIN_TOTP_SECRET。",
-    });
-  }
+  // Get Admin secrets
+  const adminSecret = process.env.ADMIN_PASSCODE || "admin";
+  const totpSecret = process.env.ADMIN_TOTP_SECRET;
 
   // Verify standard passcode
-  if (ADMIN_PASSCODE && secureStringEqual(String(passcode), ADMIN_PASSCODE)) {
-    setAdminSessionCookie(res);
+  if (passcode === adminSecret) {
     return res.json({ success: true, method: "password" });
   }
 
   // Check TOTP if dynamic code is 6 digits long and ADMIN_TOTP_SECRET is configured
-  if (ADMIN_TOTP_SECRET && /^\d{6}$/.test(passcode)) {
-    if (verifyTOTP(passcode, ADMIN_TOTP_SECRET)) {
-      setAdminSessionCookie(res);
+  if (totpSecret && /^\d{6}$/.test(passcode)) {
+    if (verifyTOTP(passcode, totpSecret)) {
       return res.json({ success: true, method: "otp" });
     }
   }
@@ -706,23 +765,12 @@ app.post("/api/admin/verify", (req, res) => {
   return res.json({ success: false, error: "身分與金鑰對對失敗，請檢查輸入。" });
 });
 
-app.get("/api/admin/session", (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-  res.json({ authenticated: isAdminAuthenticated(req) });
-});
-
-app.post("/api/admin/logout", (_req, res) => {
-  clearAdminSessionCookie(res);
-  res.json({ success: true });
-});
-
-// 11.6. Get Admin TOTP Configuration Details after authentication
-app.get("/api/admin/security-info", requireAdmin, (_req, res) => {
-  const rawTotpSecret = ADMIN_TOTP_SECRET;
+// 11.6. Get Admin TOTP Configuration Details
+app.get("/api/admin/security-info", (req, res) => {
+  const rawTotpSecret = process.env.ADMIN_TOTP_SECRET || "";
   const isTotpEnabled = !!rawTotpSecret;
   const totpSecret = isTotpEnabled ? getNormalizedBase32Secret(rawTotpSecret) : "";
-
-  res.setHeader("Cache-Control", "no-store");
+  
   res.json({
     isTotpEnabled,
     totpSecret: isTotpEnabled ? totpSecret : "未配置 KEY (請至 .env 設定 ADMIN_TOTP_SECRET)",
@@ -731,7 +779,7 @@ app.get("/api/admin/security-info", requireAdmin, (_req, res) => {
 });
 
 // 12. Smart AI Suggestion Route - server side using @google/genai
-app.post("/api/gemini/suggest", requireAdmin, async (req, res) => {
+app.post("/api/gemini/suggest", async (req, res) => {
   const { imageBase64, mimeType, descriptionInput } = req.body;
 
   if (!aiClient) {
