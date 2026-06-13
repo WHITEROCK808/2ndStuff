@@ -213,30 +213,9 @@ export default function AdminContainer({
   const metrics = useMemo(() => {
     const totalProducts = products.length;
     const availableProducts = products.filter(p => p.status === "Available").length;
-    const soldProducts = products.filter(p => p.status === "Sold").length;
     const pendingOrders = orders.filter(o => o.status === "Pending Verification" || o.status === "Balance Pending").length;
 
-    // Revenue calculations (Sum of actual total amounts for orders approved/shipped/completed or deposit sums)
-    const totalRevenue = orders
-      .filter(o => o.status !== "Cancelled")
-      .reduce((sum, o) => {
-        if (o.status === "Pending Verification") {
-          return sum; // Skip till verified or deposit cleared
-        }
-        if (o.status === "Deposit Paid") {
-          return sum + o.depositPaid;
-        }
-        return sum + o.totalAmount;
-      }, 0);
-
-    // Monthly revenue simulation (orders inside last 30 days)
-    const monthlyRevenue = orders
-      .filter(o => o.status !== "Cancelled")
-      .reduce((sum, o) => {
-        return sum + o.totalAmount;
-      }, 0) * 0.85; // Simulated percentage of settled monthly parameters
-
-    return { totalProducts, availableProducts, soldProducts, pendingOrders, totalRevenue, monthlyRevenue };
+    return { totalProducts, availableProducts, pendingOrders };
   }, [products, orders]);
 
   // Handle image conversion to Base64 for Gemini AI helper context
@@ -766,22 +745,7 @@ export default function AdminContainer({
       {/* TAB 1: METRICS HIGHLIGHT PANELS */}
       {adminTab === "metrics" && (
         <section className="space-y-8 animate-fade-in-up">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            
-            {/* Net revenue */}
-            <div className="glass-panel border p-6 rounded-2xl">
-              <span className="text-[10px] uppercase font-bold text-neutral-450 font-mono tracking-tight block">總收訖營業額</span>
-              <p className="text-3xl font-extrabold text-neutral-900 dark:text-white mt-1.5">NT$ {metrics.totalRevenue.toLocaleString()}</p>
-              <span className="text-[10px] text-emerald-500 block mt-2 font-mono">• 已核對實匯全額與訂金款額總和</span>
-            </div>
-
-            {/* Estimated monthly revenue */}
-            <div className="glass-panel border p-6 rounded-2xl">
-              <span className="text-[10px] uppercase font-bold text-neutral-450 font-mono tracking-tight block">近 30 天估算營收</span>
-              <p className="text-3xl font-extrabold text-neutral-900 dark:text-white mt-1.5">NT$ {metrics.monthlyRevenue.toLocaleString()}</p>
-              <span className="text-[10px] text-indigo-500 block mt-2 font-mono">• 交易與申購估算流動指標</span>
-            </div>
-
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {/* Vault counts */}
             <div className="glass-panel border p-6 rounded-2xl">
               <span className="text-[10px] uppercase font-bold text-neutral-450 font-mono tracking-tight block font-sans">珍藏庫商品總數</span>
