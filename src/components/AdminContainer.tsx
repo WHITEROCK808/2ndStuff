@@ -80,6 +80,7 @@ export default function AdminContainer({
   const [aiSuccessMessage, setAiSuccessMessage] = useState("");
   const aiFileRef = useRef<HTMLInputElement>(null);
   const [formErrorMessage, setFormErrorMessage] = useState("");
+  const [isFormSubmitting, setIsFormSubmitting] = useState(false);
 
   // Action input states for Order trackings
   const [focusedOrder, setFocusedOrder] = useState<Order | null>(null);
@@ -443,6 +444,7 @@ export default function AdminContainer({
     };
 
     try {
+      setIsFormSubmitting(true);
       if (productFormType === "create") {
         await onAddProduct(productPayload);
       } else if (selectedProductForEdit) {
@@ -456,6 +458,8 @@ export default function AdminContainer({
     } catch (err: any) {
       console.error("Failed to submit product:", err);
       setFormErrorMessage("上架發布或儲存商品時發生錯誤，請稍後再試！" + (err.message || ""));
+    } finally {
+      setIsFormSubmitting(false);
     }
   };
 
@@ -1194,21 +1198,64 @@ export default function AdminContainer({
                   </div>
                 )}
 
+                {/* Progress Bar and Indicator */}
+                {isFormSubmitting && (
+                  <div className="md:col-span-3 bg-blue-50/50 dark:bg-blue-950/10 border border-blue-200/40 dark:border-blue-900/40 text-blue-700 dark:text-blue-400 p-4 rounded-2xl text-xs space-y-2.5">
+                    <div className="flex items-center justify-between font-semibold">
+                      <span className="flex items-center gap-2">
+                        <RefreshCw className="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400" />
+                        {pfImages.length > 0
+                          ? `主機正在解析多張高畫質大圖（共 ${pfImages.length + 1} 張相片）並傳輸發布中...`
+                          : "主機正在同步商品資料與上傳中..."}
+                      </span>
+                      <span className="font-mono text-[10px] bg-blue-100 dark:bg-blue-900/50 px-2 py-0.5 rounded-full text-blue-800 dark:text-blue-300">
+                        UPLOADING
+                      </span>
+                    </div>
+                    {/* Visual Progress Bar simulating active upload path */}
+                    <div className="relative w-full h-1.5 bg-blue-100 dark:bg-neutral-800 rounded-full overflow-hidden">
+                      <div className="absolute inset-y-0 h-full bg-blue-600 dark:bg-blue-500 rounded-full animate-slide-progress" style={{ width: '40%' }} />
+                    </div>
+                    <p className="text-[10px] text-neutral-500 leading-relaxed font-normal">
+                      提示：多張商品大圖或本機相片傳輸將需要數秒鐘處理，請耐心等候，切勿關閉視窗。
+                    </p>
+                  </div>
+                )}
+
                 {/* Submit row */}
                 <div className="md:col-span-3 flex justify-end space-x-3.5 pt-4">
                   <button
                     type="button"
+                    disabled={isFormSubmitting}
                     onClick={() => setIsProductFormOpen(false)}
-                    className="text-xs font-semibold border rounded-xl px-4 py-2 text-neutral-600 cursor-pointer"
+                    className={`text-xs font-semibold border rounded-xl px-4 py-2 text-neutral-600 transition ${
+                      isFormSubmitting 
+                        ? "opacity-50 cursor-not-allowed" 
+                        : "cursor-pointer hover:border-neutral-400"
+                    }`}
                   >
                     取消關閉
                   </button>
                   <button
                     type="submit"
                     id="pf-submit-btn"
-                    className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl px-5 py-2 transition cursor-pointer"
+                    disabled={isFormSubmitting}
+                    className={`text-white text-xs font-semibold rounded-xl px-5 py-2 transition flex items-center justify-center gap-1.5 ${
+                      isFormSubmitting 
+                        ? "bg-blue-400 dark:bg-blue-500 cursor-not-allowed opacity-75" 
+                        : "bg-blue-600 hover:bg-blue-700 cursor-pointer"
+                    }`}
                   >
-                    {productFormType === "create" ? "立刻發布上架" : "儲存修改資料"}
+                    {isFormSubmitting ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>正在發布上架中...</span>
+                      </>
+                    ) : productFormType === "create" ? (
+                      "立刻發布上架"
+                    ) : (
+                      "儲存修改資料"
+                    )}
                   </button>
                 </div>
 
