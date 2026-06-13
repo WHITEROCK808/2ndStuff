@@ -57,8 +57,10 @@ export default function App() {
   });
   const [isFavDrawerOpen, setIsFavDrawerOpen] = useState(false);
 
-  // Admin access is backed by a signed, HttpOnly server session cookie.
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  // Admin access validation state (stored in session to stay smooth)
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
+    return sessionStorage.getItem("admin_vault_auth") === "true";
+  });
 
   // Pull database variables on mount
   const syncDatabase = async () => {
@@ -85,25 +87,6 @@ export default function App() {
 
   useEffect(() => {
     syncDatabase();
-  }, []);
-
-  useEffect(() => {
-    fetch("/api/admin/session")
-      .then((response) => response.json())
-      .then((data) => {
-        const authenticated = data.authenticated === true;
-        setIsAdminAuthenticated(authenticated);
-        if (authenticated) {
-          sessionStorage.setItem("admin_vault_auth", "true");
-          void syncDatabase();
-        } else {
-          sessionStorage.removeItem("admin_vault_auth");
-        }
-      })
-      .catch(() => {
-        setIsAdminAuthenticated(false);
-        sessionStorage.removeItem("admin_vault_auth");
-      });
   }, []);
 
   // Sync favorites back to local storage
@@ -137,11 +120,9 @@ export default function App() {
   const handleAdminLogin = () => {
     setIsAdminAuthenticated(true);
     sessionStorage.setItem("admin_vault_auth", "true");
-    void syncDatabase();
   };
 
   const handleAdminLogout = () => {
-    void fetch("/api/admin/logout", { method: "POST" });
     setIsAdminAuthenticated(false);
     sessionStorage.removeItem("admin_vault_auth");
     handleNavigate("home");

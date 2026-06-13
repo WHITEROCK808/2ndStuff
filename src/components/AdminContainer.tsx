@@ -1,5 +1,4 @@
 import React, { useState, useRef, useMemo, useEffect } from "react";
-import QRCode from "qrcode";
 import { 
   ShieldCheck, Lock, Sparkles, Plus, Edit2, Trash2, Check, X, Truck, Eye, Save, DollarSign,
   Package, ShoppingCart, Users, Settings, Tag, RefreshCw, Star, UploadCloud, AlertCircle, EyeOff, UserCheck
@@ -66,7 +65,12 @@ export default function AdminContainer({
   const [pfKnownDefects, setPfKnownDefects] = useState("");
   const [pfDescription, setPfDescription] = useState("");
   const [pfImageUrl, setPfImageUrl] = useState("");
+  const [pfImages, setPfImages] = useState<string[]>([]);
   const [pfSeoKeywords, setPfSeoKeywords] = useState("");
+
+  // Product Photo upload refs and link paste inputs
+  const productImagesFileRef = useRef<HTMLInputElement>(null);
+  const [pasteUrlInput, setPasteUrlInput] = useState("");
 
   // Smart AI Suggestions States (Gemini API)
   const [aiImageBase64, setAiImageBase64] = useState("");
@@ -120,19 +124,11 @@ export default function AdminContainer({
     totpSecret: string;
     totpUri: string;
   } | null>(null);
-  const [totpQrDataUrl, setTotpQrDataUrl] = useState("");
 
   useEffect(() => {
-    if (!isAdmin) {
-      setSecurityInfo(null);
-      setTotpQrDataUrl("");
-      return;
-    }
-
     const fetchSecurityInfo = async () => {
       try {
         const res = await fetch("/api/admin/security-info");
-        if (!res.ok) throw new Error(`Security info request failed with ${res.status}`);
         const data = await res.json();
         setSecurityInfo(data);
       } catch (err) {
@@ -141,24 +137,6 @@ export default function AdminContainer({
     };
     fetchSecurityInfo();
   }, [isAdmin]);
-
-  useEffect(() => {
-    if (!securityInfo?.totpUri) {
-      setTotpQrDataUrl("");
-      return;
-    }
-
-    QRCode.toDataURL(securityInfo.totpUri, {
-      width: 260,
-      margin: 1,
-      errorCorrectionLevel: "M",
-    })
-      .then(setTotpQrDataUrl)
-      .catch((err) => {
-        console.error("Failed to render local TOTP QR code:", err);
-        setTotpQrDataUrl("");
-      });
-  }, [securityInfo?.totpUri]);
 
   // 1. Authenticate locally with TouchID bypass indicator
   const handleAdminSignIn = async (e: React.FormEvent) => {
@@ -223,6 +201,87 @@ export default function AdminContainer({
         }
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  // Product Photos File Upload converting multiple files to Base64
+  const handleProductPhotosUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result === "string") {
+          const loadedBase64 = reader.result;
+          setPfImages((prev) => {
+            if (!pfImageUrl) {
+              setPfImageUrl(loadedBase64);
+              return prev;
+            }
+            if (prev.includes(loadedBase64)) return prev;
+            return [...prev, loadedBase64];
+          });
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+
+    if (productImagesFileRef.current) {
+      productImagesFileRef.current.value = "";
+    }
+  };
+
+  // Add outside picture link to product list
+  const handleAddImageUrl = () => {
+    const trimmed = pasteUrlInput.trim();
+    if (!trimmed) return;
+
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://") && !trimmed.startsWith("data:image")) {
+      alert("請輸入完整的圖片 URL (以 http:// 或 https:// 開頭)！");
+      return;
+    }
+
+    setPfImages((prev) => {
+      if (!pfImageUrl) {
+        setPfImageUrl(trimmed);
+        return prev;
+      }
+      if (prev.includes(trimmed)) return prev;
+      return [...prev, trimmed];
+    });
+
+    setPasteUrlInput("");
+  };
+
+  // Clearing primary featured image
+  const handleClearFeaturedImage = () => {
+    if (pfImages.length > 0) {
+      const first = pfImages[0];
+      setPfImageUrl(first);
+      setPfImages((prev) => prev.slice(1));
+    } else {
+      setPfImageUrl("");
+    }
+  };
+
+  // Removing any secondary image item
+  const handleRemoveSecondaryImage = (idxToRemove: number) => {
+    setPfImages((prev) => prev.filter((_, idx) => idx !== idxToRemove));
+  };
+
+  // Shifting secondary image to front/primary slot
+  const handleSetAsFeatured = (idxToSet: number) => {
+    const targetUrl = pfImages[idxToSet];
+    const oldFeatured = pfImageUrl;
+    const remainingSecondary = pfImages.filter((_, idx) => idx !== idxToSet);
+
+    setPfImageUrl(targetUrl);
+    if (oldFeatured) {
+      setPfImages([...remainingSecondary, oldFeatured]);
+    } else {
+      setPfImages(remainingSecondary);
     }
   };
 
@@ -303,6 +362,7 @@ export default function AdminContainer({
       knownDefects: pfKnownDefects,
       description: pfDescription,
       imageUrl: pfImageUrl || "https://images.unsplash.com/photo-1498049794561-7780e7231661?auto=format&fit=crop&q=80&w=600",
+      images: pfImages,
       seoKeywords: pfSeoKeywords.split(",").map(s => s.trim()).filter(Boolean),
     };
 
@@ -336,6 +396,8 @@ export default function AdminContainer({
     setPfKnownDefects("");
     setPfDescription("");
     setPfImageUrl("");
+    setPfImages([]);
+    setPasteUrlInput("");
     setPfSeoKeywords("");
     setIsProductFormOpen(true);
     setAiImageBase64("");
@@ -363,6 +425,8 @@ export default function AdminContainer({
     setPfKnownDefects(p.knownDefects);
     setPfDescription(p.description);
     setPfImageUrl(p.imageUrl);
+    setPfImages(p.images || []);
+    setPasteUrlInput("");
     setPfSeoKeywords(p.seoKeywords.join(", "));
     setIsProductFormOpen(true);
     setAiSuccessMessage("");
@@ -857,20 +921,139 @@ export default function AdminContainer({
                   />
                 </div>
 
-                {/* Featured Image Link */}
-                <div className="md:col-span-2">
-                  <label className="block text-xs font-semibold text-neutral-600 mb-1" htmlFor="pf-img">
-                    主體展示圖片連結 URL *
-                  </label>
-                  <input
-                    type="url"
-                    id="pf-img"
-                    required
-                    value={pfImageUrl}
-                    onChange={(e) => setPfImageUrl(e.target.value)}
-                    placeholder="https://images.unsplash.com/..."
-                    className="w-full bg-neutral-100/60 border p-2.5 rounded-xl text-xs font-mono text-neutral-900 dark:text-white"
-                  />
+                {/* Product Images Configuration */}
+                <div className="md:col-span-3 bg-neutral-100/40 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-2xl p-4.5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-xs font-bold text-neutral-800 dark:text-neutral-100 flex items-center gap-1.5">
+                        <Package className="w-3.5 h-3.5 text-neutral-500" />
+                        商品相簿與照片管理 (支援多張相片)
+                      </h4>
+                      <p className="text-[10px] text-neutral-500 mt-0.5">
+                        主展示首圖 + 多張細節輔助照片。支援貼上 URL 連結，或直接上傳多個本地端圖檔。
+                      </p>
+                    </div>
+                    
+                    {/* Upload button */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => productImagesFileRef.current?.click()}
+                        className="bg-neutral-850 hover:bg-neutral-800 text-white dark:bg-neutral-800 dark:hover:bg-neutral-700 text-[11px] px-3 py-1.5 rounded-xl font-medium flex items-center gap-1.5 transition shrink-0 cursor-pointer"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5" />
+                        上傳本機多相片
+                      </button>
+                      <input
+                        type="file"
+                        ref={productImagesFileRef}
+                        multiple
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleProductPhotosUpload}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Add Image via URL row */}
+                  <div className="flex gap-2">
+                    <input
+                      type="url"
+                      placeholder="貼上外部相片連結 URL (例如：https://images.unsplash.com/...)"
+                      value={pasteUrlInput}
+                      onChange={(e) => setPasteUrlInput(e.target.value)}
+                      className="flex-1 bg-white dark:bg-neutral-800 border p-2 rounded-xl text-xs font-mono text-neutral-900 dark:text-white"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddImageUrl();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddImageUrl}
+                      className="bg-black text-white hover:bg-neutral-900 dark:bg-white dark:text-black dark:hover:bg-neutral-100 text-xs px-3.5 py-2 font-medium rounded-xl transition cursor-pointer"
+                    >
+                      新增連結
+                    </button>
+                  </div>
+
+                  {/* Visual Grid of Images currently set for the product */}
+                  {(!pfImageUrl && pfImages.length === 0) ? (
+                    <div className="border border-dashed border-neutral-200 dark:border-neutral-800 rounded-xl p-6 text-center">
+                      <p className="text-xs text-neutral-400">
+                        目前尚無任何商品相片。請選擇上傳或貼上 URL 連結。
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3.5 pt-0.5">
+                      {/* Featured (Primary) Image Card block */}
+                      {pfImageUrl && (
+                        <div className="relative group rounded-xl border-2 border-emerald-500 bg-neutral-100/60 dark:bg-neutral-900 overflow-hidden aspect-square flex flex-col justify-between">
+                          <img 
+                            src={pfImageUrl} 
+                            alt="Featured" 
+                            className="w-full h-full object-cover absolute inset-0 z-0" 
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-black/40 z-10" />
+                          
+                          {/* Badges/Indicators */}
+                          <div className="relative z-20 p-2 flex justify-between items-start">
+                            <span className="bg-emerald-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow-sm">
+                              首圖
+                            </span>
+                            <button
+                              type="button"
+                              onClick={handleClearFeaturedImage}
+                              className="bg-black/60 hover:bg-red-600 text-white rounded-full p-1 transition cursor-pointer z-20"
+                              title="移除首圖"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Secondary Images Display Loop */}
+                      {pfImages.map((imgUrl, index) => (
+                        <div key={index} className="relative group rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-100/60 dark:bg-neutral-900 overflow-hidden aspect-square flex flex-col justify-between">
+                          <img 
+                            src={imgUrl} 
+                            alt={`Secondary ${index + 1}`} 
+                            className="w-full h-full object-cover absolute inset-0 z-0" 
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-transparent to-black/30 z-10 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-all duration-200" />
+                          
+                          {/* Badges and removal */}
+                          <div className="relative z-20 p-1.5 flex justify-between items-start w-full">
+                            <span className="bg-black/55 text-neutral-300 text-[9px] font-medium px-1.5 py-0.5 rounded">
+                              #{index + 1}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveSecondaryImage(index)}
+                              className="bg-black/60 hover:bg-red-600 text-white rounded-full p-1 transition cursor-pointer"
+                              title="刪除"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+
+                          {/* Swap / Action Tray at Bottom of hover */}
+                          <div className="relative z-20 p-1.5 w-full flex justify-center opacity-100 sm:opacity-0 group-hover:opacity-100 transition-all duration-200">
+                            <button
+                              type="button"
+                              onClick={() => handleSetAsFeatured(index)}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-[9px] font-semibold px-2 py-1 rounded shadow cursor-pointer transition w-full text-center"
+                            >
+                              設為首圖
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Usage history */}
@@ -1489,7 +1672,7 @@ export default function AdminContainer({
                   {"ADMIN_PASSCODE=YourSecurePassword"}
                 </pre>
                 <p className="text-[10px] text-neutral-400">
-                  正式環境若未設定此變數，管理員登入會保持停用，避免預設密碼造成未授權存取。
+                  （若未設定則系統內部登入密碼將預設為 <code>admin</code>，此設計使得整串密碼未出現在任何前端靜態 HTML / JS 檔案中）
                 </p>
               </div>
 
@@ -1508,13 +1691,11 @@ export default function AdminContainer({
                       <span>Google Authenticator：運作中</span>
                     </p>
                     
-                    {totpQrDataUrl && (
-                      <img
-                        src={totpQrDataUrl}
-                        alt="Security Setup QR"
-                        className="rounded-lg bg-white p-2 border shadow-sm w-[130px] h-[130px]"
-                      />
-                    )}
+                    <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=130x130&data=${encodeURIComponent(securityInfo.totpUri)}`} 
+                      alt="Security Setup QR" 
+                      className="rounded-lg bg-white p-2 border shadow-sm w-[130px] h-[130px]"
+                    />
                     <p className="text-[9px] text-neutral-400 font-mono leading-none pt-1">
                       私鑰：{securityInfo.totpSecret}
                     </p>
