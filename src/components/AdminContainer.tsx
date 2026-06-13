@@ -79,6 +79,7 @@ export default function AdminContainer({
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiSuccessMessage, setAiSuccessMessage] = useState("");
   const aiFileRef = useRef<HTMLInputElement>(null);
+  const [formErrorMessage, setFormErrorMessage] = useState("");
 
   // Action input states for Order trackings
   const [focusedOrder, setFocusedOrder] = useState<Order | null>(null);
@@ -380,36 +381,82 @@ export default function AdminContainer({
   // Create or update submission
   const handleProductSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormErrorMessage("");
+
+    // Programmatic Custom Validation Checks
+    if (!pfTitle.trim()) {
+      setFormErrorMessage("請填寫「商品名稱」！");
+      return;
+    }
+    const priceNum = Number(pfPrice);
+    if (!pfPrice.trim() || isNaN(priceNum) || priceNum <= 0) {
+      setFormErrorMessage("請填寫正數且大於 0 的「出讓定價」金額！");
+      return;
+    }
+    const origPriceNum = Number(pfOriginalPrice);
+    if (!pfOriginalPrice.trim() || isNaN(origPriceNum) || origPriceNum <= 0) {
+      setFormErrorMessage("請填寫正數且大於 0 的「購入原價/原廠定價」金額！");
+      return;
+    }
+    if (!pfLocation.trim()) {
+      setFormErrorMessage("請填寫「所在地城市」！（例如：台北市）");
+      return;
+    }
+    const condScore = Number(pfConditionScore);
+    if (!pfConditionScore || isNaN(condScore) || condScore < 1 || condScore > 5) {
+      setFormErrorMessage("「品相狀態星級」必須介於 1.0 到 5.0 星級之間！");
+      return;
+    }
+    const condPct = Number(pfConditionPercentage);
+    if (!pfConditionPercentage || isNaN(condPct) || condPct < 0 || condPct > 100) {
+      setFormErrorMessage("「品相估算新舊度百分比」必須介於 0 到 100 之間！");
+      return;
+    }
+    if (!pfKnownDefects.trim()) {
+      setFormErrorMessage("請填寫「真實已知瑕疵與備註」！（若真無任何瑕疵可填「無特別瑕疵」）");
+      return;
+    }
+    if (!pfDescription.trim()) {
+      setFormErrorMessage("請填寫「商品核心描述語句」喔！這也是發布上架的必填內容。");
+      return;
+    }
+
     const productPayload: Partial<Product> = {
-      title: pfTitle,
-      price: Number(pfPrice) || 0,
-      originalPrice: Number(pfOriginalPrice) || 0,
-      conditionScore: Number(pfConditionScore) || 4.5,
-      conditionPercentage: Number(pfConditionPercentage) || 90,
-      location: pfLocation,
+      title: pfTitle.trim(),
+      price: priceNum,
+      originalPrice: origPriceNum,
+      conditionScore: condScore,
+      conditionPercentage: condPct,
+      location: pfLocation.trim(),
       status: pfStatus,
       categorySlug: pfCategorySlug,
-      originalPurchaseDate: pfOriginalPurchaseDate,
+      originalPurchaseDate: pfOriginalPurchaseDate.trim(),
       accessories: pfAccessories.split(",").map(s => s.trim()).filter(Boolean),
-      warrantyStatus: pfWarrantyStatus,
-      usageHistory: pfUsageHistory,
-      reasonForSelling: pfReasonForSelling,
-      knownDefects: pfKnownDefects,
-      description: pfDescription,
+      warrantyStatus: pfWarrantyStatus.trim(),
+      usageHistory: pfUsageHistory.trim(),
+      reasonForSelling: pfReasonForSelling.trim(),
+      knownDefects: pfKnownDefects.trim(),
+      description: pfDescription.trim(),
       imageUrl: pfImageUrl || "https://images.unsplash.com/photo-1498049794561-7780e7231661?auto=format&fit=crop&q=80&w=600",
       images: pfImages,
       seoKeywords: pfSeoKeywords.split(",").map(s => s.trim()).filter(Boolean),
     };
 
-    if (productFormType === "create") {
-      await onAddProduct(productPayload);
-    } else if (selectedProductForEdit) {
-      await onUpdateProduct(selectedProductForEdit.id, productPayload);
-    }
+    try {
+      if (productFormType === "create") {
+        await onAddProduct(productPayload);
+      } else if (selectedProductForEdit) {
+        await onUpdateProduct(selectedProductForEdit.id, productPayload);
+      }
 
-    // Reset fields
-    setIsProductFormOpen(false);
-    setSelectedProductForEdit(null);
+      // Reset fields upon success
+      setIsProductFormOpen(false);
+      setSelectedProductForEdit(null);
+      setFormErrorMessage("");
+    } catch (err: any) {
+      console.error("Failed to submit product:", err);
+      setFormErrorMessage("上架發布或儲存商品時發生錯誤，請稍後再試！" + (err.message || ""));
+    }
   };
 
   const openCreateProductForm = () => {
@@ -439,6 +486,7 @@ export default function AdminContainer({
     setAiImageFileName("");
     setAiDescriptionInput("");
     setAiSuccessMessage("");
+    setFormErrorMessage("");
   };
 
   const openEditProductForm = (p: Product) => {
@@ -465,6 +513,7 @@ export default function AdminContainer({
     setPfSeoKeywords(p.seoKeywords.join(", "));
     setIsProductFormOpen(true);
     setAiSuccessMessage("");
+    setFormErrorMessage("");
   };
 
   // Submit parameter settings adjustments
@@ -738,7 +787,7 @@ export default function AdminContainer({
               )}
 
               {/* SECOND ROW: DETAILED FIELDS FORM */}
-              <form onSubmit={handleProductSubmit} className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <form onSubmit={handleProductSubmit} noValidate className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 
                 {/* Title */}
                 <div>
@@ -1137,6 +1186,13 @@ export default function AdminContainer({
                     className="w-full bg-neutral-100/60 border p-2.5 rounded-xl text-xs resize-none text-neutral-900 dark:text-white"
                   />
                 </div>
+
+                {formErrorMessage && (
+                  <div className="md:col-span-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 text-red-700 dark:text-red-400 p-3 rounded-xl text-xs font-semibold flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-600 dark:bg-red-500 animate-ping shrink-0" />
+                    <span>{formErrorMessage}</span>
+                  </div>
+                )}
 
                 {/* Submit row */}
                 <div className="md:col-span-3 flex justify-end space-x-3.5 pt-4">
