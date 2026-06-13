@@ -1,4 +1,4 @@
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
@@ -13,6 +13,21 @@ dotenv.config();
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const DB_FILE = path.join(process.cwd(), "db.json");
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || (IS_PRODUCTION ? "" : "admin");
+const ADMIN_TOTP_SECRET = process.env.ADMIN_TOTP_SECRET || "";
+const ADMIN_SESSION_COOKIE = "bob_admin_session";
+const ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
+const ADMIN_SESSION_SECRET =
+  process.env.ADMIN_SESSION_SECRET ||
+  crypto
+    .createHash("sha256")
+    .update(`${ADMIN_PASSCODE}:${ADMIN_TOTP_SECRET}:bobs-treasure-vault`)
+    .digest("hex");
+
+if (IS_PRODUCTION && !ADMIN_PASSCODE) {
+  console.warn("ADMIN_PASSCODE is not configured. Production password login is disabled.");
+}
 
 // Increase JSON limit to support base64 receipt uploads
 app.use(express.json({ limit: "50mb" }));
@@ -265,7 +280,87 @@ function writeDb(data: any) {
 // Ensure database file is generated right away
 readDb();
 
+function secureStringEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function parseCookies(req: Request): Record<string, string> {
+  const cookieHeader = req.headers.cookie || "";
+  return cookieHeader.split(";").reduce<Record<string, string>>((cookies, item) => {
+    const separatorIndex = item.indexOf("=");
+    if (separatorIndex === -1) return cookies;
+
+    const key = item.slice(0, separatorIndex).trim();
+    const value = item.slice(separatorIndex + 1).trim();
+    if (key) cookies[key] = decodeURIComponent(value);
+    return cookies;
+  }, {});
+}
+
+function createAdminSessionToken(): string {
+  const payload = Buffer.from(
+    JSON.stringify({ exp: Date.now() + ADMIN_SESSION_MAX_AGE_SECONDS * 1000 }),
+  ).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", ADMIN_SESSION_SECRET)
+    .update(payload)
+    .digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifyAdminSessionToken(token: string): boolean {
+  try {
+    const [payload, signature] = token.split(".");
+    if (!payload || !signature) return false;
+
+    const expectedSignature = crypto
+      .createHmac("sha256", ADMIN_SESSION_SECRET)
+      .update(payload)
+      .digest("base64url");
+    if (!secureStringEqual(signature, expectedSignature)) return false;
+
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return typeof session.exp === "number" && session.exp > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function isAdminAuthenticated(req: Request): boolean {
+  const token = parseCookies(req)[ADMIN_SESSION_COOKIE];
+  return !!token && verifyAdminSessionToken(token);
+}
+
+function setAdminSessionCookie(res: Response): void {
+  const secureAttribute = IS_PRODUCTION ? "; Secure" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(createAdminSessionToken())}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${ADMIN_SESSION_MAX_AGE_SECONDS}${secureAttribute}`,
+  );
+}
+
+function clearAdminSessionCookie(res: Response): void {
+  const secureAttribute = IS_PRODUCTION ? "; Secure" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `${ADMIN_SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0${secureAttribute}`,
+  );
+}
+
+function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!isAdminAuthenticated(req)) {
+    return res.status(401).json({ error: "管理員登入已失效，請重新驗證。" });
+  }
+  next();
+}
+
 // Expose API Endpoints
+
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, service: "bobs-treasure-vault" });
+});
 
 // 1. Get Categories
 app.get("/api/categories", (req, res) => {
@@ -280,7 +375,7 @@ app.get("/api/products", (req, res) => {
 });
 
 // 3. Create Product (Admin)
-app.post("/api/products", (req, res) => {
+app.post("/api/products", requireAdmin, (req, res) => {
   const db = readDb();
   const newProduct = {
     id: `prod-${Date.now()}`,
@@ -295,7 +390,7 @@ app.post("/api/products", (req, res) => {
 });
 
 // 4. Update Product (Admin)
-app.put("/api/products/:id", (req, res) => {
+app.put("/api/products/:id", requireAdmin, (req, res) => {
   const db = readDb();
   const index = db.products.findIndex((p: any) => p.id === req.params.id);
   if (index === -1) {
@@ -314,7 +409,7 @@ app.put("/api/products/:id", (req, res) => {
 });
 
 // 5. Delete Product (Admin)
-app.delete("/api/products/:id", (req, res) => {
+app.delete("/api/products/:id", requireAdmin, (req, res) => {
   const db = readDb();
   db.products = db.products.filter((p: any) => p.id !== req.params.id);
   writeDb(db);
@@ -328,7 +423,7 @@ app.get("/api/settings", (req, res) => {
 });
 
 // 7. Update Settings (Admin)
-app.post("/api/settings", (req, res) => {
+app.post("/api/settings", requireAdmin, (req, res) => {
   const db = readDb();
   db.settings = {
     ...db.settings,
@@ -606,7 +701,7 @@ app.post("/api/orders", (req, res) => {
 });
 
 // 10. Update Order Status (Admin)
-app.put("/api/orders/:id", (req, res) => {
+app.put("/api/orders/:id", requireAdmin, (req, res) => {
   const db = readDb();
   const index = db.orders.findIndex((o: any) => o.id === req.params.id);
   if (index === -1) {
@@ -639,7 +734,7 @@ app.put("/api/orders/:id", (req, res) => {
 });
 
 // 11. Get Customers (Admin)
-app.get("/api/customers", (req, res) => {
+app.get("/api/customers", requireAdmin, (req, res) => {
   const db = readDb();
   res.json(db.customers);
 });
@@ -746,18 +841,24 @@ app.post("/api/admin/verify", (req, res) => {
     return res.status(400).json({ success: false, error: "請輸入登入密碼或動態驗證碼。" });
   }
 
-  // Get Admin secrets
-  const adminSecret = process.env.ADMIN_PASSCODE || "admin";
-  const totpSecret = process.env.ADMIN_TOTP_SECRET;
+  if (!ADMIN_PASSCODE && !ADMIN_TOTP_SECRET) {
+    return res.status(503).json({
+      success: false,
+      configurationRequired: true,
+      error: "管理員登入尚未設定，請先在 Zeabur 配置 ADMIN_PASSCODE 或 ADMIN_TOTP_SECRET。",
+    });
+  }
 
   // Verify standard passcode
-  if (passcode === adminSecret) {
+  if (ADMIN_PASSCODE && secureStringEqual(String(passcode), ADMIN_PASSCODE)) {
+    setAdminSessionCookie(res);
     return res.json({ success: true, method: "password" });
   }
 
   // Check TOTP if dynamic code is 6 digits long and ADMIN_TOTP_SECRET is configured
-  if (totpSecret && /^\d{6}$/.test(passcode)) {
-    if (verifyTOTP(passcode, totpSecret)) {
+  if (ADMIN_TOTP_SECRET && /^\d{6}$/.test(passcode)) {
+    if (verifyTOTP(passcode, ADMIN_TOTP_SECRET)) {
+      setAdminSessionCookie(res);
       return res.json({ success: true, method: "otp" });
     }
   }
@@ -765,12 +866,23 @@ app.post("/api/admin/verify", (req, res) => {
   return res.json({ success: false, error: "身分與金鑰對對失敗，請檢查輸入。" });
 });
 
-// 11.6. Get Admin TOTP Configuration Details
-app.get("/api/admin/security-info", (req, res) => {
-  const rawTotpSecret = process.env.ADMIN_TOTP_SECRET || "";
+app.get("/api/admin/session", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ authenticated: isAdminAuthenticated(req) });
+});
+
+app.post("/api/admin/logout", (_req, res) => {
+  clearAdminSessionCookie(res);
+  res.json({ success: true });
+});
+
+// 11.6. Get Admin TOTP Configuration Details after authentication
+app.get("/api/admin/security-info", requireAdmin, (_req, res) => {
+  const rawTotpSecret = ADMIN_TOTP_SECRET;
   const isTotpEnabled = !!rawTotpSecret;
   const totpSecret = isTotpEnabled ? getNormalizedBase32Secret(rawTotpSecret) : "";
-  
+
+  res.setHeader("Cache-Control", "no-store");
   res.json({
     isTotpEnabled,
     totpSecret: isTotpEnabled ? totpSecret : "未配置 KEY (請至 .env 設定 ADMIN_TOTP_SECRET)",
@@ -779,7 +891,7 @@ app.get("/api/admin/security-info", (req, res) => {
 });
 
 // 12. Smart AI Suggestion Route - server side using @google/genai
-app.post("/api/gemini/suggest", async (req, res) => {
+app.post("/api/gemini/suggest", requireAdmin, async (req, res) => {
   const { imageBase64, mimeType, descriptionInput } = req.body;
 
   if (!aiClient) {
