@@ -226,28 +226,39 @@ export default function AdminContainer({
 
     try {
       const results = await Promise.all(readPromises);
-      
-      setPfImageUrl((currentFeatured) => {
-        let newFeatured = currentFeatured;
-        const secondaryToInsert: string[] = [];
+      if (results.length === 0) return;
+
+      const currentFeaturedEmpty = !pfImageUrl;
+
+      if (currentFeaturedEmpty) {
+        // Set first photo as main featured image
+        setPfImageUrl(results[0]);
         
-        results.forEach((base64) => {
-          if (!newFeatured) {
-            newFeatured = base64;
-          } else {
-            secondaryToInsert.push(base64);
-          }
-        });
-        
-        if (secondaryToInsert.length > 0) {
-          setPfImages((currentSecondary) => {
-            const filtered = secondaryToInsert.filter(img => !currentSecondary.includes(img));
-            return [...currentSecondary, ...filtered];
+        // Add remaining photos (if any) to secondary images list
+        if (results.length > 1) {
+          const restImages = results.slice(1);
+          setPfImages((prev) => {
+            const combined = [...prev];
+            restImages.forEach((img) => {
+              if (!combined.includes(img)) {
+                combined.push(img);
+              }
+            });
+            return combined;
           });
         }
-        
-        return newFeatured;
-      });
+      } else {
+        // Main featured image already exists, so append all selected pictures to secondary image array
+        setPfImages((prev) => {
+          const combined = [...prev];
+          results.forEach((img) => {
+            if (!combined.includes(img) && img !== pfImageUrl) {
+              combined.push(img);
+            }
+          });
+          return combined;
+        });
+      }
     } catch (err) {
       console.error("Failed to read user files:", err);
     }
@@ -963,10 +974,10 @@ export default function AdminContainer({
                       <button
                         type="button"
                         onClick={() => productImagesFileRef.current?.click()}
-                        className="bg-neutral-900 hover:bg-neutral-850 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-white text-xs px-3.5 py-2 rounded-xl font-medium flex items-center gap-1.5 transition shrink-0 cursor-pointer shadow-sm active:scale-98 border border-neutral-800 dark:border-neutral-700"
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3.5 py-2.5 rounded-xl font-medium flex items-center gap-1.5 transition shrink-0 cursor-pointer shadow-sm active:scale-95 border border-indigo-500"
                       >
-                        <UploadCloud className="w-3.5 h-3.5" />
-                        上傳本機多相片
+                        <UploadCloud className="w-4 h-4 text-white" />
+                        <span>上傳本機多相片</span>
                       </button>
                       <input
                         type="file"
