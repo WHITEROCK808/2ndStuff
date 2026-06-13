@@ -1,5 +1,4 @@
 import React, { useState, useRef, useMemo, useEffect } from "react";
-import QRCode from "qrcode";
 import { 
   ShieldCheck, Lock, Sparkles, Plus, Edit2, Trash2, Check, X, Truck, Eye, Save, DollarSign,
   Package, ShoppingCart, Users, Settings, Tag, RefreshCw, Star, UploadCloud, AlertCircle, EyeOff, UserCheck
@@ -20,6 +19,54 @@ interface AdminContainerProps {
   onDeleteProduct: (id: string) => Promise<void>;
   onUpdateOrder: (id: string, orderData: Partial<Order>) => Promise<void>;
   onUpdateSettings: (settings: Partial<SystemSettings>) => Promise<void>;
+}
+
+function compressImage(base64Str: string, maxWidth = 1000, maxHeight = 1000, quality = 0.75): Promise<string> {
+  return new Promise((resolve) => {
+    if (!base64Str || !base64Str.startsWith("data:image")) {
+      resolve(base64Str);
+      return;
+    }
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      let width = img.width;
+      let height = img.height;
+
+      if (width <= maxWidth && height <= maxHeight) {
+        resolve(base64Str);
+        return;
+      }
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width = Math.round((width * maxHeight) / height);
+          height = maxHeight;
+        }
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL("image/jpeg", quality);
+        resolve(compressed);
+      } else {
+        resolve(base64Str);
+      }
+    };
+    img.onerror = () => {
+      resolve(base64Str);
+    };
+  });
 }
 
 export default function AdminContainer({
@@ -127,19 +174,11 @@ export default function AdminContainer({
     totpSecret: string;
     totpUri: string;
   } | null>(null);
-  const [totpQrDataUrl, setTotpQrDataUrl] = useState("");
 
   useEffect(() => {
-    if (!isAdmin) {
-      setSecurityInfo(null);
-      setTotpQrDataUrl("");
-      return;
-    }
-
     const fetchSecurityInfo = async () => {
       try {
         const res = await fetch("/api/admin/security-info");
-        if (!res.ok) throw new Error(`Security info request failed with ${res.status}`);
         const data = await res.json();
         setSecurityInfo(data);
       } catch (err) {
@@ -148,24 +187,6 @@ export default function AdminContainer({
     };
     fetchSecurityInfo();
   }, [isAdmin]);
-
-  useEffect(() => {
-    if (!securityInfo?.totpUri) {
-      setTotpQrDataUrl("");
-      return;
-    }
-
-    QRCode.toDataURL(securityInfo.totpUri, {
-      width: 260,
-      margin: 1,
-      errorCorrectionLevel: "M",
-    })
-      .then(setTotpQrDataUrl)
-      .catch((err) => {
-        console.error("Failed to render local TOTP QR code:", err);
-        setTotpQrDataUrl("");
-      });
-  }, [securityInfo?.totpUri]);
 
   // 1. Authenticate locally with TouchID bypass indicator
   const handleAdminSignIn = async (e: React.FormEvent) => {
@@ -224,9 +245,14 @@ export default function AdminContainer({
       const file = e.target.files[0];
       setAiImageFileName(file.name);
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         if (typeof reader.result === "string") {
-          setAiImageBase64(reader.result);
+          try {
+            const compressed = await compressImage(reader.result, 1200, 1200, 0.75);
+            setAiImageBase64(compressed);
+          } catch (err) {
+            setAiImageBase64(reader.result);
+          }
         }
       };
       reader.readAsDataURL(file);
@@ -241,9 +267,14 @@ export default function AdminContainer({
     const readPromises = (Array.from(files) as File[]).map((file) => {
       return new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = () => {
+        reader.onload = async () => {
           if (typeof reader.result === "string") {
-            resolve(reader.result);
+            try {
+              const compressed = await compressImage(reader.result, 1200, 1200, 0.75);
+              resolve(compressed);
+            } catch (err) {
+              resolve(reader.result);
+            }
           } else {
             reject(new Error("Failed to read file as string"));
           }
@@ -1837,7 +1868,7 @@ export default function AdminContainer({
                   {"ADMIN_PASSCODE=YourSecurePassword"}
                 </pre>
                 <p className="text-[10px] text-neutral-400">
-                  正式環境若未設定此變數，密碼登入會保持停用，避免預設密碼造成未授權存取。
+                  （若未設定則系統內部登入密碼將預設為 <code>admin</code>，此設計使得整串密碼未出現在任何前端靜態 HTML / JS 檔案中）
                 </p>
               </div>
 
@@ -1856,13 +1887,11 @@ export default function AdminContainer({
                       <span>Google Authenticator：運作中</span>
                     </p>
                     
-                    {totpQrDataUrl && (
-                      <img
-                        src={totpQrDataUrl}
-                        alt="Security Setup QR"
-                        className="rounded-lg bg-white p-2 border shadow-sm w-[130px] h-[130px]"
-                      />
-                    )}
+                    <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=130x130&data=${encodeURIComponent(securityInfo.totpUri)}`} 
+                      alt="Security Setup QR" 
+                      className="rounded-lg bg-white p-2 border shadow-sm w-[130px] h-[130px]"
+                    />
                     <p className="text-[9px] text-neutral-400 font-mono leading-none pt-1">
                       私鑰：{securityInfo.totpSecret}
                     </p>
