@@ -204,28 +204,52 @@ export default function AdminContainer({
     }
   };
 
-  // Product Photos File Upload converting multiple files to Base64
-  const handleProductPhotosUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Product Photos File Upload converting multiple files to Base64 (Promise-based asynchronous batch reader to prevent stale state closures)
+  const handleProductPhotosUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files) return;
+    if (!files || files.length === 0) return;
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === "string") {
-          const loadedBase64 = reader.result;
-          setPfImages((prev) => {
-            if (!pfImageUrl) {
-              setPfImageUrl(loadedBase64);
-              return prev;
-            }
-            if (prev.includes(loadedBase64)) return prev;
-            return [...prev, loadedBase64];
+    const readPromises = (Array.from(files) as File[]).map((file) => {
+      return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === "string") {
+            resolve(reader.result);
+          } else {
+            reject(new Error("Failed to read file as string"));
+          }
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+    });
+
+    try {
+      const results = await Promise.all(readPromises);
+      
+      setPfImageUrl((currentFeatured) => {
+        let newFeatured = currentFeatured;
+        const secondaryToInsert: string[] = [];
+        
+        results.forEach((base64) => {
+          if (!newFeatured) {
+            newFeatured = base64;
+          } else {
+            secondaryToInsert.push(base64);
+          }
+        });
+        
+        if (secondaryToInsert.length > 0) {
+          setPfImages((currentSecondary) => {
+            const filtered = secondaryToInsert.filter(img => !currentSecondary.includes(img));
+            return [...currentSecondary, ...filtered];
           });
         }
-      };
-      reader.readAsDataURL(file);
+        
+        return newFeatured;
+      });
+    } catch (err) {
+      console.error("Failed to read user files:", err);
     }
 
     if (productImagesFileRef.current) {
@@ -939,7 +963,7 @@ export default function AdminContainer({
                       <button
                         type="button"
                         onClick={() => productImagesFileRef.current?.click()}
-                        className="bg-neutral-850 hover:bg-neutral-800 text-white dark:bg-neutral-800 dark:hover:bg-neutral-700 text-[11px] px-3 py-1.5 rounded-xl font-medium flex items-center gap-1.5 transition shrink-0 cursor-pointer"
+                        className="bg-neutral-900 hover:bg-neutral-850 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-white text-xs px-3.5 py-2 rounded-xl font-medium flex items-center gap-1.5 transition shrink-0 cursor-pointer shadow-sm active:scale-98 border border-neutral-800 dark:border-neutral-700"
                       >
                         <UploadCloud className="w-3.5 h-3.5" />
                         上傳本機多相片
