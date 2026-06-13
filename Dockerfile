@@ -12,11 +12,13 @@ FROM node:22-alpine AS production
 
 WORKDIR /app
 ENV NODE_ENV=production
+ENV DATA_DIR=/data
 
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
+RUN mkdir -p /data
 
 EXPOSE 3000
 

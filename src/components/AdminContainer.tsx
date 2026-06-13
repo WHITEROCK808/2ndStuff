@@ -2,10 +2,17 @@ import React, { useState, useRef, useMemo, useEffect } from "react";
 import QRCode from "qrcode";
 import { 
   ShieldCheck, Lock, Sparkles, Plus, Edit2, Trash2, Check, X, Truck, Eye, Save, DollarSign,
-  Package, ShoppingCart, Users, Settings, Tag, RefreshCw, Star, UploadCloud, AlertCircle, EyeOff, UserCheck
+  Package, ShoppingCart, Users, Settings, Tag, RefreshCw, Star, UploadCloud, AlertCircle, EyeOff, UserCheck,
+  Database, Download
 } from "lucide-react";
 import { Product, Order, Customer, SystemSettings } from "../types";
-import { getGeminiSuggestions } from "../lib/api";
+import {
+  downloadDatabaseBackup,
+  getGeminiSuggestions,
+  getStorageStatus,
+  restoreDatabaseBackup,
+  type StorageStatus,
+} from "../lib/api";
 import { formatBytes, optimizeImageForUpload } from "../lib/image";
 
 const MAX_PRODUCT_IMAGE_COUNT = 10;
@@ -135,11 +142,15 @@ export default function AdminContainer({
     totpUri: string;
   } | null>(null);
   const [totpQrDataUrl, setTotpQrDataUrl] = useState("");
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [isBackupBusy, setIsBackupBusy] = useState(false);
+  const backupFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!isAdmin) {
       setSecurityInfo(null);
       setTotpQrDataUrl("");
+      setStorageStatus(null);
       return;
     }
 
@@ -154,6 +165,9 @@ export default function AdminContainer({
       }
     };
     fetchSecurityInfo();
+    getStorageStatus()
+      .then(setStorageStatus)
+      .catch((err) => console.error("Failed to load storage status:", err));
   }, [isAdmin]);
 
   useEffect(() => {
@@ -597,6 +611,47 @@ export default function AdminContainer({
       servicePolicy: settServicePolicy,
     });
     alert("商店業務參數與政策設定已成功更新！");
+  };
+
+  const handleDownloadBackup = async () => {
+    setIsBackupBusy(true);
+    try {
+      const blob = await downloadDatabaseBackup();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `bob-vault-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert("備份下載失敗，請確認管理員登入仍有效。");
+    } finally {
+      setIsBackupBusy(false);
+    }
+  };
+
+  const handleRestoreBackup = async (file: File) => {
+    if (!window.confirm("還原會以此備份取代目前全部商品、訂單、客戶與設定。確定繼續嗎？")) {
+      if (backupFileRef.current) backupFileRef.current.value = "";
+      return;
+    }
+
+    setIsBackupBusy(true);
+    try {
+      const backup = JSON.parse(await file.text());
+      const result = await restoreDatabaseBackup(backup);
+      alert(`還原完成：${result.productCount} 件商品、${result.orderCount} 筆訂單。`);
+      window.location.reload();
+    } catch (err) {
+      console.error(err);
+      alert("還原失敗：檔案格式不正確，或管理員登入已失效。");
+    } finally {
+      setIsBackupBusy(false);
+      if (backupFileRef.current) backupFileRef.current.value = "";
+    }
   };
 
   // Render Lock screen if !isAdmin
@@ -1889,6 +1944,71 @@ export default function AdminContainer({
             </div>
 
           </form>
+
+          <div className="bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900 rounded-2xl p-6 mt-8 space-y-4">
+            <div className="flex items-center space-x-2">
+              <Database className="h-5 w-5 text-blue-600" />
+              <h3 className="font-sans text-sm font-bold text-neutral-900 dark:text-white">
+                資料庫持久化與備份
+              </h3>
+            </div>
+            <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
+              正式環境資料儲存在 <code>/data/db.json</code>。Zeabur 服務必須將 Volume 掛載到
+              <code> /data</code>，商品與照片才不會在重新部署後消失。
+            </p>
+
+            {storageStatus && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                <div className="rounded-xl bg-white/80 dark:bg-neutral-950 p-3 border dark:border-neutral-800">
+                  <p className="text-neutral-400">商品</p>
+                  <p className="font-bold mt-1">{storageStatus.productCount}</p>
+                </div>
+                <div className="rounded-xl bg-white/80 dark:bg-neutral-950 p-3 border dark:border-neutral-800">
+                  <p className="text-neutral-400">訂單</p>
+                  <p className="font-bold mt-1">{storageStatus.orderCount}</p>
+                </div>
+                <div className="rounded-xl bg-white/80 dark:bg-neutral-950 p-3 border dark:border-neutral-800">
+                  <p className="text-neutral-400">資料大小</p>
+                  <p className="font-bold mt-1">{formatBytes(storageStatus.databaseBytes)}</p>
+                </div>
+                <div className="rounded-xl bg-white/80 dark:bg-neutral-950 p-3 border dark:border-neutral-800">
+                  <p className="text-neutral-400">自動備份</p>
+                  <p className="font-bold mt-1">{storageStatus.backupCount} 份</p>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={handleDownloadBackup}
+                disabled={isBackupBusy}
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold text-xs rounded-xl px-4 py-3 flex items-center gap-2 transition"
+              >
+                <Download className="h-4 w-4" />
+                下載完整備份
+              </button>
+              <button
+                type="button"
+                onClick={() => backupFileRef.current?.click()}
+                disabled={isBackupBusy}
+                className="bg-white dark:bg-neutral-900 hover:bg-neutral-50 disabled:opacity-50 text-neutral-800 dark:text-neutral-100 border dark:border-neutral-700 font-semibold text-xs rounded-xl px-4 py-3 flex items-center gap-2 transition"
+              >
+                <UploadCloud className="h-4 w-4" />
+                還原備份
+              </button>
+              <input
+                ref={backupFileRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void handleRestoreBackup(file);
+                }}
+              />
+            </div>
+          </div>
 
           {/* Admin Security Settings Card */}
           <div className="bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl p-6 mt-8 space-y-4">

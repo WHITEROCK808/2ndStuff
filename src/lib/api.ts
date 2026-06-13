@@ -4,6 +4,16 @@ const BASE_URL = "/api";
 const READ_TIMEOUT_MS = 12_000;
 const WRITE_TIMEOUT_MS = 30_000;
 
+export interface StorageStatus {
+  databaseFile: string;
+  databaseBytes: number;
+  backupCount: number;
+  productCount: number;
+  orderCount: number;
+  customerCount: number;
+  persistentVolumePath: string | null;
+}
+
 async function fetchJson<T>(
   url: string,
   init?: RequestInit,
@@ -103,6 +113,34 @@ export async function updateOrder(id: string, orderData: Partial<Order>): Promis
 
 export async function getCustomers(): Promise<Customer[]> {
   return fetchJson<Customer[]>(`${BASE_URL}/customers`);
+}
+
+export async function getStorageStatus(): Promise<StorageStatus> {
+  return fetchJson<StorageStatus>(`${BASE_URL}/admin/storage`);
+}
+
+export async function downloadDatabaseBackup(): Promise<Blob> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${BASE_URL}/admin/backup`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Request failed with ${response.status}`);
+    return response.blob();
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+export async function restoreDatabaseBackup(
+  backup: unknown,
+): Promise<{ success: boolean; productCount: number; orderCount: number; customerCount: number }> {
+  return fetchJson(`${BASE_URL}/admin/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(backup),
+  }, WRITE_TIMEOUT_MS);
 }
 
 export async function getGeminiSuggestions(

@@ -5,6 +5,8 @@ coverage/
 .DS_Store
 *.log
 db.json
+recovery-live-*.json
+backups/
 .env*
 !.env.example
 .env.local.totp.png

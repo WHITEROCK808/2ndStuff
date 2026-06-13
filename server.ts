@@ -12,8 +12,12 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const DB_FILE = path.join(process.cwd(), "db.json");
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const DATA_DIR =
+  process.env.DATA_DIR || (IS_PRODUCTION ? "/data" : process.cwd());
+const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, "db.json");
+const DB_BACKUP_DIR = path.join(path.dirname(DB_FILE), "backups");
+const MAX_DB_BACKUPS = 10;
 const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || (IS_PRODUCTION ? "" : "admin");
 const ADMIN_TOTP_SECRET = process.env.ADMIN_TOTP_SECRET || "";
 const ADMIN_SESSION_COOKIE = "bob_admin_session";
@@ -255,25 +259,117 @@ const defaultDb = {
   }
 };
 
-function readDb() {
-  try {
-    if (!fs.existsSync(DB_FILE)) {
-      fs.writeFileSync(DB_FILE, JSON.stringify(defaultDb, null, 2), "utf-8");
-      return defaultDb;
-    }
-    const content = fs.readFileSync(DB_FILE, "utf-8");
-    return JSON.parse(content);
-  } catch (err) {
-    console.error("Failed to read database:", err);
-    return defaultDb;
+function createInitialDb() {
+  const initialDb = structuredClone(defaultDb);
+  if (IS_PRODUCTION) {
+    initialDb.products = [];
+    initialDb.orders = [];
+    initialDb.customers = [];
+  }
+  return initialDb;
+}
+
+function isValidDb(data: any): boolean {
+  return (
+    data &&
+    Array.isArray(data.categories) &&
+    Array.isArray(data.products) &&
+    Array.isArray(data.orders) &&
+    Array.isArray(data.customers) &&
+    data.settings &&
+    typeof data.settings === "object"
+  );
+}
+
+function ensureDatabaseDirectories(): void {
+  fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+  fs.mkdirSync(DB_BACKUP_DIR, { recursive: true });
+}
+
+function listDatabaseBackups(): string[] {
+  if (!fs.existsSync(DB_BACKUP_DIR)) return [];
+  return fs
+    .readdirSync(DB_BACKUP_DIR)
+    .filter((name) => /^db-\d{14}-\d+\.json$/.test(name))
+    .sort()
+    .reverse();
+}
+
+function pruneDatabaseBackups(): void {
+  for (const backupName of listDatabaseBackups().slice(MAX_DB_BACKUPS)) {
+    fs.unlinkSync(path.join(DB_BACKUP_DIR, backupName));
   }
 }
 
-function writeDb(data: any) {
+function createDatabaseBackup(): string | null {
+  if (!fs.existsSync(DB_FILE)) return null;
+
+  ensureDatabaseDirectories();
+  const timestamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
+  const backupName = `db-${timestamp}-${Date.now()}.json`;
+  const backupPath = path.join(DB_BACKUP_DIR, backupName);
+  fs.copyFileSync(DB_FILE, backupPath);
+  pruneDatabaseBackups();
+  return backupPath;
+}
+
+function writeDb(data: any, options: { skipBackup?: boolean } = {}) {
+  if (!isValidDb(data)) {
+    throw new Error("Refusing to write an invalid database payload.");
+  }
+
+  ensureDatabaseDirectories();
+
+  const serialized = JSON.stringify(data, null, 2);
+  const temporaryFile = `${DB_FILE}.${process.pid}.${Date.now()}.tmp`;
   try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
-  } catch (err) {
-    console.error("Failed to write database:", err);
+    fs.writeFileSync(temporaryFile, serialized, "utf-8");
+    JSON.parse(fs.readFileSync(temporaryFile, "utf-8"));
+    fs.renameSync(temporaryFile, DB_FILE);
+  } finally {
+    if (fs.existsSync(temporaryFile)) fs.unlinkSync(temporaryFile);
+  }
+
+  if (!options.skipBackup) {
+    try {
+      createDatabaseBackup();
+    } catch (backupError) {
+      console.error("Database write succeeded, but backup creation failed:", backupError);
+    }
+  }
+}
+
+function readDb() {
+  ensureDatabaseDirectories();
+
+  if (!fs.existsSync(DB_FILE)) {
+    const initialDb = createInitialDb();
+    writeDb(initialDb, { skipBackup: true });
+    console.warn(
+      `Database initialized at ${DB_FILE}. Production starts empty until a backup is restored.`,
+    );
+    return initialDb;
+  }
+
+  try {
+    const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    if (!isValidDb(data)) throw new Error("Database structure is invalid.");
+    return data;
+  } catch (primaryError) {
+    console.error("Failed to read primary database:", primaryError);
+    for (const backupName of listDatabaseBackups()) {
+      try {
+        const backupPath = path.join(DB_BACKUP_DIR, backupName);
+        const backup = JSON.parse(fs.readFileSync(backupPath, "utf-8"));
+        if (!isValidDb(backup)) continue;
+        writeDb(backup, { skipBackup: true });
+        console.warn(`Recovered database from ${backupPath}.`);
+        return backup;
+      } catch (backupError) {
+        console.error(`Failed to read database backup ${backupName}:`, backupError);
+      }
+    }
+    throw primaryError;
   }
 }
 
@@ -839,6 +935,47 @@ app.put("/api/orders/:id", requireAdmin, (req, res) => {
 app.get("/api/customers", requireAdmin, (req, res) => {
   const db = readDb();
   res.json(db.customers);
+});
+
+app.get("/api/admin/storage", requireAdmin, (_req, res) => {
+  const db = readDb();
+  const stats = fs.statSync(DB_FILE);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    databaseFile: DB_FILE,
+    databaseBytes: stats.size,
+    backupCount: listDatabaseBackups().length,
+    productCount: db.products.length,
+    orderCount: db.orders.length,
+    customerCount: db.customers.length,
+    persistentVolumePath: IS_PRODUCTION ? "/data" : null,
+  });
+});
+
+app.get("/api/admin/backup", requireAdmin, (_req, res) => {
+  const db = readDb();
+  const date = new Date().toISOString().slice(0, 10);
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="bob-vault-backup-${date}.json"`,
+  );
+  res.send(JSON.stringify(db, null, 2));
+});
+
+app.post("/api/admin/restore", requireAdmin, (req, res) => {
+  if (!isValidDb(req.body)) {
+    return res.status(400).json({ error: "備份檔格式不正確，未進行還原。" });
+  }
+
+  writeDb(req.body);
+  res.json({
+    success: true,
+    productCount: req.body.products.length,
+    orderCount: req.body.orders.length,
+    customerCount: req.body.customers.length,
+  });
 });
 
 // Helper to encode a Buffer to standard Base32
