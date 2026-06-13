@@ -60,20 +60,18 @@ export default function App() {
   // Admin access is backed by a signed, HttpOnly server session cookie.
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
 
-  // Pull database variables on mount
-  const syncDatabase = async () => {
+  // Pull only the data needed for the public storefront.
+  const syncPublicData = async () => {
     try {
-      const [prodData, catData, orderData, custData, settData] = await Promise.all([
+      const [prodData, catData, orderData, settData] = await Promise.all([
         getProducts().catch((e) => { console.error("Error fetching products:", e); return []; }),
         getCategories().catch((e) => { console.error("Error fetching categories:", e); return []; }),
         getOrders().catch((e) => { console.error("Error fetching orders:", e); return []; }),
-        getCustomers().catch((e) => { console.error("Error fetching customers:", e); return []; }),
         getSettings().catch((e) => { console.error("Error fetching settings:", e); return null; }),
       ]);
       setProducts(prodData || []);
       setCategories(catData || []);
       setOrders(orderData || []);
-      setCustomers(custData || []);
       setSettings(settData || DEFAULT_FALLBACK_SETTINGS);
     } catch (error) {
       console.error("Database connection syncing failed:", error);
@@ -83,8 +81,17 @@ export default function App() {
     }
   };
 
+  const syncAdminData = async () => {
+    const [orderData, customerData] = await Promise.all([
+      getOrders().catch((e) => { console.error("Error fetching admin orders:", e); return []; }),
+      getCustomers().catch((e) => { console.error("Error fetching customers:", e); return []; }),
+    ]);
+    setOrders(orderData || []);
+    setCustomers(customerData || []);
+  };
+
   useEffect(() => {
-    syncDatabase();
+    syncPublicData();
   }, []);
 
   useEffect(() => {
@@ -95,7 +102,7 @@ export default function App() {
         setIsAdminAuthenticated(authenticated);
         if (authenticated) {
           sessionStorage.setItem("admin_vault_auth", "true");
-          void syncDatabase();
+          void syncAdminData();
         } else {
           sessionStorage.removeItem("admin_vault_auth");
         }
@@ -137,7 +144,7 @@ export default function App() {
   const handleAdminLogin = () => {
     setIsAdminAuthenticated(true);
     sessionStorage.setItem("admin_vault_auth", "true");
-    void syncDatabase();
+    void syncAdminData();
   };
 
   const handleAdminLogout = () => {
@@ -186,7 +193,7 @@ export default function App() {
   const handleUpdateOrder = async (id: string, oPayload: Partial<Order>) => {
     try {
       await updateOrder(id, oPayload);
-      await syncDatabase();
+      await syncAdminData();
     } catch (err) {
       console.error(err);
     }
@@ -216,7 +223,7 @@ export default function App() {
     try {
       const newOrderCreated = await createOrder(orderData);
       setIncomingSearchOrderId(newOrderCreated.id);
-      await syncDatabase();
+      setOrders((current) => [newOrderCreated, ...current]);
       handleNavigate("status");
     } catch (err) {
       console.error(err);

@@ -371,7 +371,83 @@ app.get("/api/categories", (req, res) => {
 // 2. Get Products
 app.get("/api/products", (req, res) => {
   const db = readDb();
-  res.json(db.products);
+  res.setHeader("Cache-Control", "no-store");
+  res.json(db.products.map(toClientProduct));
+});
+
+function isEmbeddedImage(source: unknown): source is string {
+  return typeof source === "string" && source.startsWith("data:image/");
+}
+
+function getProductImageSource(product: any, slot: string): string | null {
+  if (slot === "featured") {
+    return typeof product.imageUrl === "string" ? product.imageUrl : null;
+  }
+
+  const imageIndex = Number(slot);
+  if (!Number.isInteger(imageIndex) || imageIndex < 0 || !Array.isArray(product.images)) {
+    return null;
+  }
+  return typeof product.images[imageIndex] === "string" ? product.images[imageIndex] : null;
+}
+
+function getProductMediaUrl(product: any, slot: string, source: string): string {
+  const version = crypto.createHash("sha256").update(source).digest("hex").slice(0, 12);
+  return `/api/products/${encodeURIComponent(product.id)}/media/${slot}?v=${version}`;
+}
+
+function toClientProduct(product: any) {
+  const imageUrl = isEmbeddedImage(product.imageUrl)
+    ? getProductMediaUrl(product, "featured", product.imageUrl)
+    : product.imageUrl;
+  const images = Array.isArray(product.images)
+    ? product.images.map((image: unknown, index: number) =>
+        isEmbeddedImage(image) ? getProductMediaUrl(product, String(index), image) : image,
+      )
+    : [];
+
+  return {
+    ...product,
+    imageUrl,
+    images,
+  };
+}
+
+function resolveStoredImageReference(value: unknown, currentProduct: any): unknown {
+  if (typeof value !== "string") return value;
+
+  const match = value.match(/^\/api\/products\/([^/]+)\/media\/(featured|\d+)(?:\?.*)?$/);
+  if (!match || decodeURIComponent(match[1]) !== currentProduct.id) return value;
+
+  return getProductImageSource(currentProduct, match[2]) || value;
+}
+
+app.get("/api/products/:id/media/:slot", (req, res) => {
+  const db = readDb();
+  const product = db.products.find((item: any) => item.id === req.params.id);
+  if (!product) {
+    return res.status(404).json({ error: "Product not found" });
+  }
+
+  const source = getProductImageSource(product, req.params.slot);
+  if (!source) {
+    return res.status(404).json({ error: "Product image not found" });
+  }
+
+  if (!isEmbeddedImage(source)) {
+    return res.redirect(source);
+  }
+
+  const match = source.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
+  if (!match) {
+    return res.status(415).json({ error: "Unsupported embedded image" });
+  }
+
+  const imageBuffer = Buffer.from(match[2], "base64");
+  res.setHeader("Content-Type", match[1]);
+  res.setHeader("Content-Length", imageBuffer.length);
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.send(imageBuffer);
 });
 
 function validateProductImages(req: Request, res: Response, next: NextFunction) {
@@ -407,7 +483,7 @@ app.post("/api/products", requireAdmin, validateProductImages, (req, res) => {
   };
   db.products.push(newProduct);
   writeDb(db);
-  res.status(201).json({ id: newProduct.id });
+  res.status(201).json(toClientProduct(newProduct));
 });
 
 // 4. Update Product (Admin)
@@ -421,12 +497,17 @@ app.put("/api/products/:id", requireAdmin, validateProductImages, (req, res) => 
     ...db.products[index],
     ...req.body,
     accessories: Array.isArray(req.body.accessories) ? req.body.accessories : (req.body.accessories || "").split(",").map((s: string) => s.trim()).filter(Boolean),
-    images: req.body.images || db.products[index].images,
+    imageUrl: resolveStoredImageReference(req.body.imageUrl, db.products[index]),
+    images: Array.isArray(req.body.images)
+      ? req.body.images.map((image: unknown) =>
+          resolveStoredImageReference(image, db.products[index]),
+        )
+      : db.products[index].images,
     seoKeywords: Array.isArray(req.body.seoKeywords) ? req.body.seoKeywords : (req.body.seoKeywords || "").split(",").map((s: string) => s.trim()).filter(Boolean),
   };
   db.products[index] = updatedProduct;
   writeDb(db);
-  res.json({ success: true, id: updatedProduct.id });
+  res.json(toClientProduct(updatedProduct));
 });
 
 // 5. Delete Product (Admin)
