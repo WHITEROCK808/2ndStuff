@@ -185,67 +185,8 @@ const defaultDb = {
       seoKeywords: ["herman miller aeron", "aeron size b", "ergonomic office chair", "second hand aeron"]
     }
   ],
-  orders: [
-    {
-      id: "ORD-928172",
-      productId: "prod-5",
-      productTitle: "Herman Miller Aeron Chair Onyx (Size B)",
-      productPrice: 32000,
-      paymentType: "Deposit",
-      discountApplied: 0,
-      totalAmount: 32000,
-      depositPaid: 9600,
-      balanceDue: 22400,
-      status: "Deposit Paid",
-      customerName: "Alex Mercer",
-      customerPhone: "+886 912 345 678",
-      customerEmail: "alex.mercer@gmail.com",
-      shippingAddress: "No. 88, Section 3, Xinyi Road, Da'an District, Taipei City",
-      notes: "Please call 30 minutes before arrival so I can ask the security guard to open the loading bay elevator.",
-      createdAt: "2026-06-10T08:14:00Z",
-      dueDate: "2026-06-13T08:14:00Z",
-      trackingNumber: "TRK-TWPost-A01",
-      shippingCarrier: "Taiwan Post LTL"
-    },
-    {
-      id: "ORD-110292",
-      productId: "prod-1",
-      productTitle: "MacBook Air M2 (13.6-inch)",
-      productPrice: 24500,
-      paymentType: "Full",
-      discountApplied: 1225,
-      totalAmount: 23275,
-      depositPaid: 0,
-      balanceDue: 0,
-      status: "Shipped",
-      customerName: "Jane Watson",
-      customerPhone: "+886 987 654 321",
-      customerEmail: "jane.watson@techcorp.com",
-      shippingAddress: "No. 1, Section 4, Roosevelt Road, Da'an District, Taipei City (NTU Campus)",
-      notes: "Leave with the dormitory security counter if I'm of class.",
-      createdAt: "2026-06-09T14:30:00Z",
-      trackingNumber: "TW-99882711",
-      shippingCarrier: "Black Cat Delivery Service"
-    }
-  ],
-  customers: [
-    {
-      id: "cust-1",
-      name: "Alex Mercer",
-      phone: "+886 912 345 678",
-      email: "alex.mercer@gmail.com",
-      address: "No. 88, Section 3, Xinyi Road, Da'an District, Taipei City",
-      orderIds: ["ORD-928172"]
-    },
-    {
-      id: "cust-2",
-      name: "Jane Watson",
-      phone: "+886 987 654 321",
-      email: "jane.watson@techcorp.com",
-      address: "No. 1, Section 4, Roosevelt Road, Da'an District, Taipei City (NTU Campus)",
-      orderIds: ["ORD-110292"]
-    }
-  ],
+  orders: [],
+  customers: [],
   settings: {
     bankName: "Cathay United Bank (國泰世華銀行)",
     bankCode: "013",
