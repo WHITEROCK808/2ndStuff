@@ -374,8 +374,29 @@ app.get("/api/products", (req, res) => {
   res.json(db.products);
 });
 
+function validateProductImages(req: Request, res: Response, next: NextFunction) {
+  const secondaryImages = Array.isArray(req.body.images) ? req.body.images : [];
+  const images = [req.body.imageUrl, ...secondaryImages].filter(
+    (image): image is string => typeof image === "string" && image.length > 0,
+  );
+
+  if (images.length > 10) {
+    return res.status(400).json({ error: "單件商品最多可放 10 張照片。" });
+  }
+
+  const embeddedImageBytes = images
+    .filter((image) => image.startsWith("data:image/"))
+    .reduce((total, image) => total + Buffer.byteLength(image, "utf8"), 0);
+
+  if (embeddedImageBytes > 20 * 1024 * 1024) {
+    return res.status(413).json({ error: "商品照片資料過大，請縮小圖片後再試。" });
+  }
+
+  next();
+}
+
 // 3. Create Product (Admin)
-app.post("/api/products", requireAdmin, (req, res) => {
+app.post("/api/products", requireAdmin, validateProductImages, (req, res) => {
   const db = readDb();
   const newProduct = {
     id: `prod-${Date.now()}`,
@@ -386,11 +407,11 @@ app.post("/api/products", requireAdmin, (req, res) => {
   };
   db.products.push(newProduct);
   writeDb(db);
-  res.json(newProduct);
+  res.status(201).json({ id: newProduct.id });
 });
 
 // 4. Update Product (Admin)
-app.put("/api/products/:id", requireAdmin, (req, res) => {
+app.put("/api/products/:id", requireAdmin, validateProductImages, (req, res) => {
   const db = readDb();
   const index = db.products.findIndex((p: any) => p.id === req.params.id);
   if (index === -1) {
@@ -405,7 +426,7 @@ app.put("/api/products/:id", requireAdmin, (req, res) => {
   };
   db.products[index] = updatedProduct;
   writeDb(db);
-  res.json(updatedProduct);
+  res.json({ success: true, id: updatedProduct.id });
 });
 
 // 5. Delete Product (Admin)

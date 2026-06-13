@@ -150,20 +150,24 @@ export default function App() {
   // Create Product Handler
   const handleAddProduct = async (pPayload: Partial<Product>) => {
     try {
-      await createProduct(pPayload);
-      await syncDatabase();
+      const createdProduct = await createProduct(pPayload);
+      setProducts((current) => [...current, createdProduct]);
     } catch (err) {
       console.error(err);
+      throw err;
     }
   };
 
   // Update Product Handler
   const handleUpdateProduct = async (id: string, pPayload: Partial<Product>) => {
     try {
-      await updateProduct(id, pPayload);
-      await syncDatabase();
+      const updatedProduct = await updateProduct(id, pPayload);
+      setProducts((current) =>
+        current.map((product) => (product.id === id ? updatedProduct : product)),
+      );
     } catch (err) {
       console.error(err);
+      throw err;
     }
   };
 
@@ -171,9 +175,10 @@ export default function App() {
   const handleDeleteProduct = async (id: string) => {
     try {
       await deleteProduct(id);
-      await syncDatabase();
+      setProducts((current) => current.filter((product) => product.id !== id));
     } catch (err) {
       console.error(err);
+      throw err;
     }
   };
 

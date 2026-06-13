@@ -6,6 +6,10 @@ import {
 } from "lucide-react";
 import { Product, Order, Customer, SystemSettings } from "../types";
 import { getGeminiSuggestions } from "../lib/api";
+import { formatBytes, optimizeImageForUpload } from "../lib/image";
+
+const MAX_PRODUCT_IMAGE_COUNT = 10;
+const MAX_SOURCE_IMAGE_BYTES = 30 * 1024 * 1024;
 
 interface AdminContainerProps {
   products: Product[];
@@ -72,6 +76,9 @@ export default function AdminContainer({
   // Product Photo upload refs and link paste inputs
   const productImagesFileRef = useRef<HTMLInputElement>(null);
   const [pasteUrlInput, setPasteUrlInput] = useState("");
+  const [isProductImagesProcessing, setIsProductImagesProcessing] = useState(false);
+  const [imageProcessingProgress, setImageProcessingProgress] = useState({ current: 0, total: 0 });
+  const [imageOptimizationSummary, setImageOptimizationSummary] = useState("");
 
   // Smart AI Suggestions States (Gemini API)
   const [aiImageBase64, setAiImageBase64] = useState("");
@@ -219,81 +226,93 @@ export default function AdminContainer({
   }, [products, orders]);
 
   // Handle image conversion to Base64 for Gemini AI helper context
-  const handleAiImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAiImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       setAiImageFileName(file.name);
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          setAiImageBase64(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
+      try {
+        const optimized = await optimizeImageForUpload(file);
+        setAiImageBase64(optimized.dataUrl);
+      } catch (error) {
+        console.error("Failed to optimize Gemini reference image:", error);
+        setFormErrorMessage(
+          error instanceof Error ? error.message : "AI 參考照片處理失敗，請重新選取。",
+        );
+      }
     }
   };
 
-  // Product Photos File Upload converting multiple files to Base64 (Promise-based asynchronous batch reader to prevent stale state closures)
+  // Resize and compress local photos before storing them as Base64.
   const handleProductPhotosUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const readPromises = (Array.from(files) as File[]).map((file) => {
-      return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (typeof reader.result === "string") {
-            resolve(reader.result);
-          } else {
-            reject(new Error("Failed to read file as string"));
-          }
-        };
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-      });
-    });
+    const existingCount = (pfImageUrl ? 1 : 0) + pfImages.length;
+    const availableSlots = Math.max(0, MAX_PRODUCT_IMAGE_COUNT - existingCount);
+    const selectedFiles = (Array.from(files) as File[]).slice(0, availableSlots);
+    const oversizedFiles = selectedFiles.filter((file) => file.size > MAX_SOURCE_IMAGE_BYTES);
+    const acceptedFiles = selectedFiles.filter((file) => file.size <= MAX_SOURCE_IMAGE_BYTES);
 
+    if (availableSlots === 0) {
+      alert(`每件商品最多可放 ${MAX_PRODUCT_IMAGE_COUNT} 張照片。`);
+      e.target.value = "";
+      return;
+    }
+    if (files.length > availableSlots) {
+      alert(`本次僅加入前 ${availableSlots} 張，單件商品上限為 ${MAX_PRODUCT_IMAGE_COUNT} 張。`);
+    }
+    if (oversizedFiles.length > 0) {
+      alert(`已略過 ${oversizedFiles.length} 張超過 30 MB 的照片。`);
+    }
+    if (acceptedFiles.length === 0) {
+      e.target.value = "";
+      return;
+    }
+
+    setIsProductImagesProcessing(true);
+    setImageOptimizationSummary("");
+    setImageProcessingProgress({ current: 0, total: acceptedFiles.length });
     try {
-      const results = await Promise.all(readPromises);
+      const results: string[] = [];
+      let originalBytes = 0;
+      let optimizedBytes = 0;
+      const failures: string[] = [];
+
+      for (let index = 0; index < acceptedFiles.length; index += 1) {
+        const file = acceptedFiles[index];
+        setImageProcessingProgress({ current: index + 1, total: acceptedFiles.length });
+        try {
+          const optimized = await optimizeImageForUpload(file);
+          results.push(optimized.dataUrl);
+          originalBytes += optimized.originalBytes;
+          optimizedBytes += optimized.optimizedBytes;
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : file.name);
+        }
+      }
+
       if (results.length === 0) return;
 
-      const currentFeaturedEmpty = !pfImageUrl;
+      const nextResults = [...results];
+      if (!pfImageUrl) {
+        setPfImageUrl(nextResults.shift() || "");
+      }
+      setPfImages((prev) => [...prev, ...nextResults.filter((image) => !prev.includes(image))]);
 
-      if (currentFeaturedEmpty) {
-        // Set first photo as main featured image
-        setPfImageUrl(results[0]);
-        
-        // Add remaining photos (if any) to secondary images list
-        if (results.length > 1) {
-          const restImages = results.slice(1);
-          setPfImages((prev) => {
-            const combined = [...prev];
-            restImages.forEach((img) => {
-              if (!combined.includes(img)) {
-                combined.push(img);
-              }
-            });
-            return combined;
-          });
-        }
-      } else {
-        // Main featured image already exists, so append all selected pictures to secondary image array
-        setPfImages((prev) => {
-          const combined = [...prev];
-          results.forEach((img) => {
-            if (!combined.includes(img) && img !== pfImageUrl) {
-              combined.push(img);
-            }
-          });
-          return combined;
-        });
+      setImageOptimizationSummary(
+        `已最佳化 ${results.length} 張：${formatBytes(originalBytes)} → ${formatBytes(optimizedBytes)}`,
+      );
+      if (failures.length > 0) {
+        alert(`有 ${failures.length} 張圖片無法處理：\n${failures.join("\n")}`);
       }
     } catch (err) {
       console.error("Failed to read user files:", err);
-    }
-
-    if (productImagesFileRef.current) {
-      productImagesFileRef.current.value = "";
+      setFormErrorMessage(err instanceof Error ? err.message : "圖片最佳化失敗，請重新選取照片。");
+    } finally {
+      setIsProductImagesProcessing(false);
+      if (productImagesFileRef.current) {
+        productImagesFileRef.current.value = "";
+      }
     }
   };
 
@@ -301,6 +320,11 @@ export default function AdminContainer({
   const handleAddImageUrl = () => {
     const trimmed = pasteUrlInput.trim();
     if (!trimmed) return;
+
+    if ((pfImageUrl ? 1 : 0) + pfImages.length >= MAX_PRODUCT_IMAGE_COUNT) {
+      alert(`每件商品最多可放 ${MAX_PRODUCT_IMAGE_COUNT} 張照片。`);
+      return;
+    }
 
     if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://") && !trimmed.startsWith("data:image")) {
       alert("請輸入完整的圖片 URL (以 http:// 或 https:// 開頭)！");
@@ -411,6 +435,11 @@ export default function AdminContainer({
     e.preventDefault();
     setFormErrorMessage("");
 
+    if (isProductImagesProcessing) {
+      setFormErrorMessage("照片仍在最佳化，請稍候完成後再發布。");
+      return;
+    }
+
     // Programmatic Custom Validation Checks
     if (!pfTitle.trim()) {
       setFormErrorMessage("請填寫「商品名稱」！");
@@ -511,6 +540,7 @@ export default function AdminContainer({
     setPfImageUrl("");
     setPfImages([]);
     setPasteUrlInput("");
+    setImageOptimizationSummary("");
     setPfSeoKeywords("");
     setIsProductFormOpen(true);
     setAiImageBase64("");
@@ -541,6 +571,7 @@ export default function AdminContainer({
     setPfImageUrl(p.imageUrl);
     setPfImages(p.images || []);
     setPasteUrlInput("");
+    setImageOptimizationSummary("");
     setPfSeoKeywords(p.seoKeywords.join(", "));
     setIsProductFormOpen(true);
     setAiSuccessMessage("");
@@ -1053,11 +1084,24 @@ export default function AdminContainer({
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
+                        disabled={isProductImagesProcessing || isFormSubmitting}
                         onClick={() => productImagesFileRef.current?.click()}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3.5 py-2.5 rounded-xl font-medium flex items-center gap-1.5 transition shrink-0 cursor-pointer shadow-sm active:scale-95 border border-indigo-500"
+                        className={`text-white text-xs px-3.5 py-2.5 rounded-xl font-medium flex items-center gap-1.5 transition shrink-0 shadow-sm border ${
+                          isProductImagesProcessing || isFormSubmitting
+                            ? "bg-indigo-400 border-indigo-300 cursor-not-allowed"
+                            : "bg-indigo-600 hover:bg-indigo-700 cursor-pointer active:scale-95 border-indigo-500"
+                        }`}
                       >
-                        <UploadCloud className="w-4 h-4 text-white" />
-                        <span>上傳本機多相片</span>
+                        {isProductImagesProcessing ? (
+                          <RefreshCw className="w-4 h-4 text-white animate-spin" />
+                        ) : (
+                          <UploadCloud className="w-4 h-4 text-white" />
+                        )}
+                        <span>
+                          {isProductImagesProcessing
+                            ? `最佳化 ${imageProcessingProgress.current}/${imageProcessingProgress.total}`
+                            : "上傳本機多相片"}
+                        </span>
                       </button>
                       <input
                         type="file"
@@ -1069,6 +1113,32 @@ export default function AdminContainer({
                       />
                     </div>
                   </div>
+
+                  {isProductImagesProcessing && (
+                    <div className="bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 space-y-2">
+                      <div className="flex items-center justify-between text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">
+                        <span>正在瀏覽器內縮圖與壓縮，不會上傳原始大檔</span>
+                        <span>{imageProcessingProgress.current}/{imageProcessingProgress.total}</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-indigo-100 dark:bg-neutral-800 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-indigo-600 transition-all duration-300"
+                          style={{
+                            width: `${Math.max(
+                              8,
+                              (imageProcessingProgress.current / Math.max(1, imageProcessingProgress.total)) * 100,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {!isProductImagesProcessing && imageOptimizationSummary && (
+                    <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/50 rounded-xl px-3 py-2 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                      {imageOptimizationSummary}，發布時將直接使用輕量版本。
+                    </div>
+                  )}
 
                   {/* Add Image via URL row */}
                   <div className="flex gap-2">
@@ -1232,8 +1302,8 @@ export default function AdminContainer({
                       <span className="flex items-center gap-2">
                         <RefreshCw className="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400" />
                         {pfImages.length > 0
-                          ? `主機正在解析多張高畫質大圖（共 ${pfImages.length + 1} 張相片）並傳輸發布中...`
-                          : "主機正在同步商品資料與上傳中..."}
+                          ? `正在送出已最佳化照片（共 ${pfImages.length + 1} 張）...`
+                          : "正在同步商品資料..."}
                       </span>
                       <span className="font-mono text-[10px] bg-blue-100 dark:bg-blue-900/50 px-2 py-0.5 rounded-full text-blue-800 dark:text-blue-300">
                         UPLOADING
@@ -1244,7 +1314,7 @@ export default function AdminContainer({
                       <div className="absolute inset-y-0 h-full bg-blue-600 dark:bg-blue-500 rounded-full animate-slide-progress" style={{ width: '40%' }} />
                     </div>
                     <p className="text-[10px] text-neutral-500 leading-relaxed font-normal">
-                      提示：多張商品大圖或本機相片傳輸將需要數秒鐘處理，請耐心等候，切勿關閉視窗。
+                      照片已在瀏覽器內完成縮圖壓縮，現在只傳送輕量版本。
                     </p>
                   </div>
                 )}
@@ -1253,10 +1323,10 @@ export default function AdminContainer({
                 <div className="md:col-span-3 flex justify-end space-x-3.5 pt-4">
                   <button
                     type="button"
-                    disabled={isFormSubmitting}
+                    disabled={isFormSubmitting || isProductImagesProcessing}
                     onClick={() => setIsProductFormOpen(false)}
                     className={`text-xs font-semibold border rounded-xl px-4 py-2 text-neutral-600 transition ${
-                      isFormSubmitting 
+                      isFormSubmitting || isProductImagesProcessing
                         ? "opacity-50 cursor-not-allowed" 
                         : "cursor-pointer hover:border-neutral-400"
                     }`}
@@ -1266,14 +1336,19 @@ export default function AdminContainer({
                   <button
                     type="submit"
                     id="pf-submit-btn"
-                    disabled={isFormSubmitting}
+                    disabled={isFormSubmitting || isProductImagesProcessing}
                     className={`text-white text-xs font-semibold rounded-xl px-5 py-2 transition flex items-center justify-center gap-1.5 ${
-                      isFormSubmitting 
+                      isFormSubmitting || isProductImagesProcessing
                         ? "bg-blue-400 dark:bg-blue-500 cursor-not-allowed opacity-75" 
                         : "bg-blue-600 hover:bg-blue-700 cursor-pointer"
                     }`}
                   >
-                    {isFormSubmitting ? (
+                    {isProductImagesProcessing ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>照片最佳化中...</span>
+                      </>
+                    ) : isFormSubmitting ? (
                       <>
                         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                         <span>正在發布上架中...</span>

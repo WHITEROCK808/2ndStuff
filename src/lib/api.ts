@@ -21,7 +21,8 @@ export async function createProduct(product: Partial<Product>): Promise<Product>
     body: JSON.stringify(product),
   });
   if (!res.ok) throw new Error("Failed to create product");
-  return res.json();
+  const result = await res.json();
+  return { ...product, id: result.id } as Product;
 }
 
 export async function updateProduct(id: string, product: Partial<Product>): Promise<Product> {
@@ -31,7 +32,7 @@ export async function updateProduct(id: string, product: Partial<Product>): Prom
     body: JSON.stringify(product),
   });
   if (!res.ok) throw new Error("Failed to update product");
-  return res.json();
+  return { ...product, id } as Product;
 }
 
 export async function deleteProduct(id: string): Promise<boolean> {
