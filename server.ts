@@ -523,6 +523,30 @@ app.post("/api/products", requireAdmin, validateProductImages, (req, res) => {
   res.status(201).json(toClientProduct(newProduct));
 });
 
+// Reorder Products (Admin). The persisted array order is also the storefront order.
+app.put("/api/products/order", requireAdmin, (req, res) => {
+  const db = readDb();
+  const productIds = req.body?.productIds;
+
+  if (
+    !Array.isArray(productIds) ||
+    productIds.some((id: unknown) => typeof id !== "string") ||
+    new Set(productIds).size !== productIds.length ||
+    productIds.length !== db.products.length
+  ) {
+    return res.status(400).json({ error: "A complete, unique product ID list is required" });
+  }
+
+  const productsById = new Map(db.products.map((product: any) => [product.id, product]));
+  if (productIds.some((id: string) => !productsById.has(id))) {
+    return res.status(400).json({ error: "Product ID list contains an unknown product" });
+  }
+
+  db.products = productIds.map((id: string) => productsById.get(id));
+  writeDb(db);
+  res.json(db.products.map(toClientProduct));
+});
+
 // 4. Update Product (Admin)
 app.put("/api/products/:id", requireAdmin, validateProductImages, (req, res) => {
   const db = readDb();

@@ -12,7 +12,7 @@ import TermsContainer from "./components/TermsContainer";
 import { Product, Category, SystemSettings, Order, Customer } from "./types";
 import { 
   getProducts, getCategories, getOrders, getCustomers, getSettings,
-  createProduct, updateProduct, deleteProduct, updateOrder, updateSettings, createOrder
+  createProduct, updateProduct, deleteProduct, reorderProducts, updateOrder, updateSettings, createOrder
 } from "./lib/api";
 
 const DEFAULT_FALLBACK_SETTINGS: SystemSettings = {
@@ -189,6 +189,24 @@ export default function App() {
     }
   };
 
+  const handleReorderProducts = async (productIds: string[]) => {
+    const previousProducts = products;
+    const productsById = new Map(previousProducts.map((product) => [product.id, product]));
+    const reorderedProducts = productIds
+      .map((id) => productsById.get(id))
+      .filter((product): product is Product => Boolean(product));
+
+    setProducts(reorderedProducts);
+    try {
+      const savedProducts = await reorderProducts(productIds);
+      setProducts(savedProducts);
+    } catch (err) {
+      setProducts(previousProducts);
+      console.error(err);
+      throw err;
+    }
+  };
+
   // Update Order Status Handler
   const handleUpdateOrder = async (id: string, oPayload: Partial<Order>) => {
     try {
@@ -328,6 +346,7 @@ export default function App() {
             onAddProduct={handleAddProduct}
             onUpdateProduct={handleUpdateProduct}
             onDeleteProduct={handleDeleteProduct}
+            onReorderProducts={handleReorderProducts}
             onUpdateOrder={handleUpdateOrder}
             onUpdateSettings={handleUpdateSettings}
           />

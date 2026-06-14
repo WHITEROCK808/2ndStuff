@@ -3,7 +3,7 @@ import QRCode from "qrcode";
 import { 
   ShieldCheck, Lock, Sparkles, Plus, Edit2, Trash2, Check, X, Truck, Eye, Save, DollarSign,
   Package, ShoppingCart, Users, Settings, Tag, RefreshCw, Star, UploadCloud, AlertCircle, EyeOff, UserCheck,
-  Database, Download
+  Database, Download, ArrowUp, ArrowDown, ChevronsUp
 } from "lucide-react";
 import { Product, Order, Customer, SystemSettings } from "../types";
 import {
@@ -29,6 +29,7 @@ interface AdminContainerProps {
   onAddProduct: (product: Partial<Product>) => Promise<void>;
   onUpdateProduct: (id: string, product: Partial<Product>) => Promise<void>;
   onDeleteProduct: (id: string) => Promise<void>;
+  onReorderProducts: (productIds: string[]) => Promise<void>;
   onUpdateOrder: (id: string, orderData: Partial<Order>) => Promise<void>;
   onUpdateSettings: (settings: Partial<SystemSettings>) => Promise<void>;
 }
@@ -44,6 +45,7 @@ export default function AdminContainer({
   onAddProduct,
   onUpdateProduct,
   onDeleteProduct,
+  onReorderProducts,
   onUpdateOrder,
   onUpdateSettings,
 }: AdminContainerProps) {
@@ -96,6 +98,33 @@ export default function AdminContainer({
   const aiFileRef = useRef<HTMLInputElement>(null);
   const [formErrorMessage, setFormErrorMessage] = useState("");
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  const [reorderingProductId, setReorderingProductId] = useState<string | null>(null);
+
+  const handleMoveProduct = async (fromIndex: number, toIndex: number) => {
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= products.length ||
+      toIndex >= products.length
+    ) {
+      return;
+    }
+
+    const reorderedProducts = [...products];
+    const [movedProduct] = reorderedProducts.splice(fromIndex, 1);
+    reorderedProducts.splice(toIndex, 0, movedProduct);
+    setReorderingProductId(movedProduct.id);
+
+    try {
+      await onReorderProducts(reorderedProducts.map((product) => product.id));
+    } catch (error) {
+      console.error(error);
+      alert("展示順位更新失敗，請稍後再試。");
+    } finally {
+      setReorderingProductId(null);
+    }
+  };
 
   // Action input states for Order trackings
   const [focusedOrder, setFocusedOrder] = useState<Order | null>(null);
@@ -1393,12 +1422,13 @@ export default function AdminContainer({
                   <th className="p-4">分類</th>
                   <th className="p-4">出讓價格</th>
                   <th className="p-4">品相狀態</th>
+                  <th className="p-4">展示順位</th>
                   <th className="p-4">狀態</th>
                   <th className="p-4 text-right">管理操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {products.map((p) => (
+                {products.map((p, index) => (
                   <tr key={p.id} className="hover:bg-neutral-50/40">
                     <td className="p-4 flex items-center space-x-3.5">
                       <img src={p.imageUrl} alt="" className="h-9 w-12 object-cover rounded border" />
@@ -1410,6 +1440,38 @@ export default function AdminContainer({
                     <td className="p-4 capitalize">{p.categorySlug === 'electronics' ? '3C數位' : p.categorySlug === 'photography' ? '攝影攝影' : p.categorySlug === 'audio' ? '極致音訊' : p.categorySlug === 'gaming' ? '遊戲雙卡' : p.categorySlug === 'home' ? '居家辦公' : p.categorySlug === 'books' ? '絕版書籍' : p.categorySlug === 'collectibles' ? '珍稀收藏' : '其他'}</td>
                     <td className="p-4 font-semibold">NT$ {p.price.toLocaleString()}</td>
                     <td className="p-4">{p.conditionPercentage}% 新</td>
+                    <td className="p-4">
+                      <div className="flex items-center gap-1">
+                        <span className="w-7 font-mono text-[10px] text-neutral-400">#{index + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveProduct(index, 0)}
+                          disabled={index === 0 || reorderingProductId !== null}
+                          className="rounded-md p-1.5 text-neutral-500 transition hover:bg-neutral-100 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-25 dark:hover:bg-neutral-800"
+                          title="移到最前面"
+                        >
+                          <ChevronsUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveProduct(index, index - 1)}
+                          disabled={index === 0 || reorderingProductId !== null}
+                          className="rounded-md p-1.5 text-neutral-500 transition hover:bg-neutral-100 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-25 dark:hover:bg-neutral-800"
+                          title="向前一位"
+                        >
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveProduct(index, index + 1)}
+                          disabled={index === products.length - 1 || reorderingProductId !== null}
+                          className="rounded-md p-1.5 text-neutral-500 transition hover:bg-neutral-100 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-25 dark:hover:bg-neutral-800"
+                          title="向後一位"
+                        >
+                          <ArrowDown className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </td>
                     <td className="p-4">
                       <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
                         p.status === "Available" ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"
@@ -1443,19 +1505,30 @@ export default function AdminContainer({
 
           {/* Simple grid list for mobiles */}
           <div className="grid grid-cols-1 gap-4 md:hidden">
-            {products.map(p => (
-              <div key={p.id} className="glass-panel border p-4 rounded-xl flex space-x-3 items-center justify-between">
-                <div className="flex items-center space-x-3 min-w-0">
+            {products.map((p, index) => (
+              <div key={p.id} className="glass-panel border p-4 rounded-xl space-y-3">
+                <div className="flex space-x-3 items-center justify-between">
+                  <div className="flex items-center space-x-3 min-w-0">
                   <img src={p.imageUrl} alt="" className="h-10 w-14 object-cover rounded border shrink-0" />
                   <div className="min-w-0">
                     <p className="font-semibold text-neutral-850 dark:text-neutral-100 truncate text-xs">{p.title}</p>
                     <p className="text-[10px] text-neutral-400">NT$ {p.price.toLocaleString()}</p>
                   </div>
+                  </div>
+
+                  <div className="flex space-x-1 shrink-0">
+                    <button onClick={() => openEditProductForm(p)} className="p-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-blue-500"><Edit2 className="h-4.5 w-4.5" /></button>
+                    <button onClick={() => { if(confirm("確定要刪除這件寶貴的商品物件嗎？")) onDeleteProduct(p.id); }} className="p-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-red-500"><Trash2 className="h-4.5 w-4.5" /></button>
+                  </div>
                 </div>
 
-                <div className="flex space-x-1 shrink-0">
-                  <button onClick={() => openEditProductForm(p)} className="p-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-blue-500"><Edit2 className="h-4.5 w-4.5" /></button>
-                  <button onClick={() => { if(confirm("確定要刪除這件寶貴的商品物件嗎？")) onDeleteProduct(p.id); }} className="p-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-red-500"><Trash2 className="h-4.5 w-4.5" /></button>
+                <div className="flex items-center justify-between border-t pt-3 dark:border-neutral-800">
+                  <span className="font-mono text-[10px] text-neutral-400">前端展示 #{index + 1}</span>
+                  <div className="flex gap-1">
+                    <button type="button" onClick={() => handleMoveProduct(index, 0)} disabled={index === 0 || reorderingProductId !== null} className="rounded-lg bg-neutral-100 p-2 text-neutral-600 disabled:opacity-25 dark:bg-neutral-800" title="移到最前面"><ChevronsUp className="h-4 w-4" /></button>
+                    <button type="button" onClick={() => handleMoveProduct(index, index - 1)} disabled={index === 0 || reorderingProductId !== null} className="rounded-lg bg-neutral-100 p-2 text-neutral-600 disabled:opacity-25 dark:bg-neutral-800" title="向前一位"><ArrowUp className="h-4 w-4" /></button>
+                    <button type="button" onClick={() => handleMoveProduct(index, index + 1)} disabled={index === products.length - 1 || reorderingProductId !== null} className="rounded-lg bg-neutral-100 p-2 text-neutral-600 disabled:opacity-25 dark:bg-neutral-800" title="向後一位"><ArrowDown className="h-4 w-4" /></button>
+                  </div>
                 </div>
               </div>
             ))}

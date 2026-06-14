@@ -70,6 +70,14 @@ export async function deleteProduct(id: string): Promise<boolean> {
   return data.success;
 }
 
+export async function reorderProducts(productIds: string[]): Promise<Product[]> {
+  return fetchJson<Product[]>(`${BASE_URL}/products/order`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ productIds }),
+  }, WRITE_TIMEOUT_MS);
+}
+
 export async function getSettings(): Promise<SystemSettings> {
   return fetchJson<SystemSettings>(`${BASE_URL}/settings`);
 }
