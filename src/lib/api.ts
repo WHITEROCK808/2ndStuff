@@ -1,97 +1,68 @@
 import { Category, Product, SystemSettings, Order, Customer } from "../types";
 
 const BASE_URL = "/api";
-const READ_TIMEOUT_MS = 12_000;
-const WRITE_TIMEOUT_MS = 30_000;
-
-export interface StorageStatus {
-  databaseFile: string;
-  databaseBytes: number;
-  backupCount: number;
-  productCount: number;
-  orderCount: number;
-  customerCount: number;
-  persistentVolumePath: string | null;
-}
-
-async function fetchJson<T>(
-  url: string,
-  init?: RequestInit,
-  timeoutMs = READ_TIMEOUT_MS,
-): Promise<T> {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const res = await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Request failed with ${res.status}`);
-    return res.json();
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("伺服器回應逾時，請稍後重試。");
-    }
-    throw error;
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
-}
 
 export async function getCategories(): Promise<Category[]> {
-  return fetchJson<Category[]>(`${BASE_URL}/categories`);
+  const res = await fetch(`${BASE_URL}/categories`);
+  if (!res.ok) throw new Error("Failed to fetch categories");
+  return res.json();
 }
 
 export async function getProducts(): Promise<Product[]> {
-  return fetchJson<Product[]>(`${BASE_URL}/products`);
+  const res = await fetch(`${BASE_URL}/products`);
+  if (!res.ok) throw new Error("Failed to fetch products");
+  return res.json();
 }
 
 export async function createProduct(product: Partial<Product>): Promise<Product> {
-  return fetchJson<Product>(`${BASE_URL}/products`, {
+  const res = await fetch(`${BASE_URL}/products`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(product),
-  }, WRITE_TIMEOUT_MS);
+  });
+  if (!res.ok) throw new Error("Failed to create product");
+  return res.json();
 }
 
 export async function updateProduct(id: string, product: Partial<Product>): Promise<Product> {
-  return fetchJson<Product>(`${BASE_URL}/products/${id}`, {
+  const res = await fetch(`${BASE_URL}/products/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(product),
-  }, WRITE_TIMEOUT_MS);
+  });
+  if (!res.ok) throw new Error("Failed to update product");
+  return res.json();
 }
 
 export async function deleteProduct(id: string): Promise<boolean> {
-  const data = await fetchJson<{ success: boolean }>(`${BASE_URL}/products/${id}`, {
+  const res = await fetch(`${BASE_URL}/products/${id}`, {
     method: "DELETE",
-  }, WRITE_TIMEOUT_MS);
+  });
+  if (!res.ok) throw new Error("Failed to delete product");
+  const data = await res.json();
   return data.success;
 }
 
-export async function reorderProducts(productIds: string[]): Promise<Product[]> {
-  return fetchJson<Product[]>(`${BASE_URL}/products/order`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ productIds }),
-  }, WRITE_TIMEOUT_MS);
-}
-
 export async function getSettings(): Promise<SystemSettings> {
-  return fetchJson<SystemSettings>(`${BASE_URL}/settings`);
+  const res = await fetch(`${BASE_URL}/settings`);
+  if (!res.ok) throw new Error("Failed to fetch settings");
+  return res.json();
 }
 
 export async function updateSettings(settings: Partial<SystemSettings>): Promise<SystemSettings> {
-  return fetchJson<SystemSettings>(`${BASE_URL}/settings`, {
+  const res = await fetch(`${BASE_URL}/settings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),
-  }, WRITE_TIMEOUT_MS);
+  });
+  if (!res.ok) throw new Error("Failed to update settings");
+  return res.json();
 }
 
 export async function getOrders(): Promise<Order[]> {
-  return fetchJson<Order[]>(`${BASE_URL}/orders`);
+  const res = await fetch(`${BASE_URL}/orders`);
+  if (!res.ok) throw new Error("Failed to fetch orders");
+  return res.json();
 }
 
 export async function createOrder(orderData: {
@@ -104,51 +75,47 @@ export async function createOrder(orderData: {
   notes?: string;
   bankTransferReceipt?: string;
 }): Promise<Order> {
-  return fetchJson<Order>(`${BASE_URL}/orders`, {
+  const res = await fetch(`${BASE_URL}/orders`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(orderData),
-  }, WRITE_TIMEOUT_MS);
+  });
+  if (!res.ok) throw new Error("Failed to submit order");
+  return res.json();
 }
 
 export async function updateOrder(id: string, orderData: Partial<Order>): Promise<Order> {
-  return fetchJson<Order>(`${BASE_URL}/orders/${id}`, {
+  const res = await fetch(`${BASE_URL}/orders/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(orderData),
-  }, WRITE_TIMEOUT_MS);
+  });
+  if (!res.ok) throw new Error("Failed to update order");
+  return res.json();
 }
 
 export async function getCustomers(): Promise<Customer[]> {
-  return fetchJson<Customer[]>(`${BASE_URL}/customers`);
+  const res = await fetch(`${BASE_URL}/customers`);
+  if (!res.ok) throw new Error("Failed to fetch customers");
+  return res.json();
 }
 
-export async function getStorageStatus(): Promise<StorageStatus> {
-  return fetchJson<StorageStatus>(`${BASE_URL}/admin/storage`);
+export async function getMessages(): Promise<any[]> {
+  const res = await fetch(`${BASE_URL}/messages`);
+  if (!res.ok) throw new Error("Failed to fetch messages");
+  return res.json();
 }
 
-export async function downloadDatabaseBackup(): Promise<Blob> {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${BASE_URL}/admin/backup`, {
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`Request failed with ${response.status}`);
-    return response.blob();
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
+export async function markMessageAsRead(id: string): Promise<any> {
+  const res = await fetch(`${BASE_URL}/messages/${id}/read`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to mark message as read");
+  return res.json();
 }
 
-export async function restoreDatabaseBackup(
-  backup: unknown,
-): Promise<{ success: boolean; productCount: number; orderCount: number; customerCount: number }> {
-  return fetchJson(`${BASE_URL}/admin/restore`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(backup),
-  }, WRITE_TIMEOUT_MS);
+export async function deleteMessage(id: string): Promise<boolean> {
+  const res = await fetch(`${BASE_URL}/messages/${id}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete message");
+  return (await res.json()).success;
 }
 
 export async function getGeminiSuggestions(
@@ -166,9 +133,11 @@ export async function getGeminiSuggestions(
   accessories: string[];
   knownDefects: string;
 }> {
-  return fetchJson(`${BASE_URL}/gemini/suggest`, {
+  const res = await fetch(`${BASE_URL}/gemini/suggest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ descriptionInput, imageBase64, mimeType }),
-  }, WRITE_TIMEOUT_MS);
+  });
+  if (!res.ok) throw new Error("Failed to retrieve Gemini smart suggestions");
+  return res.json();
 }

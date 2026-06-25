@@ -12,7 +12,8 @@ import TermsContainer from "./components/TermsContainer";
 import { Product, Category, SystemSettings, Order, Customer } from "./types";
 import { 
   getProducts, getCategories, getOrders, getCustomers, getSettings,
-  createProduct, updateProduct, deleteProduct, reorderProducts, updateOrder, updateSettings, createOrder
+  createProduct, updateProduct, deleteProduct, updateOrder, updateSettings, createOrder,
+  getMessages, markMessageAsRead, deleteMessage
 } from "./lib/api";
 
 const DEFAULT_FALLBACK_SETTINGS: SystemSettings = {
@@ -44,6 +45,7 @@ export default function App() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [settings, setSettings] = useState<SystemSettings | null>(null);
+  const [messages, setMessages] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Client Favorites Watch List (localStorage, no login required)
@@ -57,22 +59,28 @@ export default function App() {
   });
   const [isFavDrawerOpen, setIsFavDrawerOpen] = useState(false);
 
-  // Admin access is backed by a signed, HttpOnly server session cookie.
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  // Admin access validation state (stored in session to stay smooth)
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
+    return sessionStorage.getItem("admin_vault_auth") === "true";
+  });
 
-  // Pull only the data needed for the public storefront.
-  const syncPublicData = async () => {
+  // Pull database variables on mount
+  const syncDatabase = async () => {
     try {
-      const [prodData, catData, orderData, settData] = await Promise.all([
+      const [prodData, catData, orderData, custData, settData, msgData] = await Promise.all([
         getProducts().catch((e) => { console.error("Error fetching products:", e); return []; }),
         getCategories().catch((e) => { console.error("Error fetching categories:", e); return []; }),
         getOrders().catch((e) => { console.error("Error fetching orders:", e); return []; }),
+        getCustomers().catch((e) => { console.error("Error fetching customers:", e); return []; }),
         getSettings().catch((e) => { console.error("Error fetching settings:", e); return null; }),
+        getMessages().catch((e) => { console.error("Error fetching messages:", e); return []; }),
       ]);
       setProducts(prodData || []);
       setCategories(catData || []);
       setOrders(orderData || []);
+      setCustomers(custData || []);
       setSettings(settData || DEFAULT_FALLBACK_SETTINGS);
+      setMessages(msgData || []);
     } catch (error) {
       console.error("Database connection syncing failed:", error);
       setSettings(DEFAULT_FALLBACK_SETTINGS);
@@ -81,36 +89,8 @@ export default function App() {
     }
   };
 
-  const syncAdminData = async () => {
-    const [orderData, customerData] = await Promise.all([
-      getOrders().catch((e) => { console.error("Error fetching admin orders:", e); return []; }),
-      getCustomers().catch((e) => { console.error("Error fetching customers:", e); return []; }),
-    ]);
-    setOrders(orderData || []);
-    setCustomers(customerData || []);
-  };
-
   useEffect(() => {
-    syncPublicData();
-  }, []);
-
-  useEffect(() => {
-    fetch("/api/admin/session")
-      .then((response) => response.json())
-      .then((data) => {
-        const authenticated = data.authenticated === true;
-        setIsAdminAuthenticated(authenticated);
-        if (authenticated) {
-          sessionStorage.setItem("admin_vault_auth", "true");
-          void syncAdminData();
-        } else {
-          sessionStorage.removeItem("admin_vault_auth");
-        }
-      })
-      .catch(() => {
-        setIsAdminAuthenticated(false);
-        sessionStorage.removeItem("admin_vault_auth");
-      });
+    syncDatabase();
   }, []);
 
   // Sync favorites back to local storage
@@ -144,11 +124,9 @@ export default function App() {
   const handleAdminLogin = () => {
     setIsAdminAuthenticated(true);
     sessionStorage.setItem("admin_vault_auth", "true");
-    void syncAdminData();
   };
 
   const handleAdminLogout = () => {
-    void fetch("/api/admin/logout", { method: "POST" });
     setIsAdminAuthenticated(false);
     sessionStorage.removeItem("admin_vault_auth");
     handleNavigate("home");
@@ -157,24 +135,20 @@ export default function App() {
   // Create Product Handler
   const handleAddProduct = async (pPayload: Partial<Product>) => {
     try {
-      const createdProduct = await createProduct(pPayload);
-      setProducts((current) => [...current, createdProduct]);
+      await createProduct(pPayload);
+      await syncDatabase();
     } catch (err) {
       console.error(err);
-      throw err;
     }
   };
 
   // Update Product Handler
   const handleUpdateProduct = async (id: string, pPayload: Partial<Product>) => {
     try {
-      const updatedProduct = await updateProduct(id, pPayload);
-      setProducts((current) =>
-        current.map((product) => (product.id === id ? updatedProduct : product)),
-      );
+      await updateProduct(id, pPayload);
+      await syncDatabase();
     } catch (err) {
       console.error(err);
-      throw err;
     }
   };
 
@@ -182,28 +156,9 @@ export default function App() {
   const handleDeleteProduct = async (id: string) => {
     try {
       await deleteProduct(id);
-      setProducts((current) => current.filter((product) => product.id !== id));
+      await syncDatabase();
     } catch (err) {
       console.error(err);
-      throw err;
-    }
-  };
-
-  const handleReorderProducts = async (productIds: string[]) => {
-    const previousProducts = products;
-    const productsById = new Map(previousProducts.map((product) => [product.id, product]));
-    const reorderedProducts = productIds
-      .map((id) => productsById.get(id))
-      .filter((product): product is Product => Boolean(product));
-
-    setProducts(reorderedProducts);
-    try {
-      const savedProducts = await reorderProducts(productIds);
-      setProducts(savedProducts);
-    } catch (err) {
-      setProducts(previousProducts);
-      console.error(err);
-      throw err;
     }
   };
 
@@ -211,7 +166,7 @@ export default function App() {
   const handleUpdateOrder = async (id: string, oPayload: Partial<Order>) => {
     try {
       await updateOrder(id, oPayload);
-      await syncAdminData();
+      await syncDatabase();
     } catch (err) {
       console.error(err);
     }
@@ -222,6 +177,24 @@ export default function App() {
     try {
       const updated = await updateSettings(sPayload);
       setSettings(updated);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleMarkMessageRead = async (id: string) => {
+    try {
+      await markMessageAsRead(id);
+      await syncDatabase();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteMessage = async (id: string) => {
+    try {
+      await deleteMessage(id);
+      await syncDatabase();
     } catch (err) {
       console.error(err);
     }
@@ -241,7 +214,7 @@ export default function App() {
     try {
       const newOrderCreated = await createOrder(orderData);
       setIncomingSearchOrderId(newOrderCreated.id);
-      setOrders((current) => [newOrderCreated, ...current]);
+      await syncDatabase();
       handleNavigate("status");
     } catch (err) {
       console.error(err);
@@ -339,6 +312,7 @@ export default function App() {
             products={products}
             orders={orders}
             customers={customers}
+            messages={messages}
             settings={settings}
             isAdmin={isAdminAuthenticated}
             onLoginAdmin={handleAdminLogin}
@@ -346,9 +320,10 @@ export default function App() {
             onAddProduct={handleAddProduct}
             onUpdateProduct={handleUpdateProduct}
             onDeleteProduct={handleDeleteProduct}
-            onReorderProducts={handleReorderProducts}
             onUpdateOrder={handleUpdateOrder}
             onUpdateSettings={handleUpdateSettings}
+            onMarkMessageRead={handleMarkMessageRead}
+            onDeleteMessage={handleDeleteMessage}
           />
         )}
 
