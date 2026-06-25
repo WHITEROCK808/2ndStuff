@@ -11,6 +11,7 @@ export default function ContactContainer() {
   const [sendError, setSendError] = useState("");
   const [testMailUrl, setTestMailUrl] = useState("");
   const [isTestMail, setIsTestMail] = useState(false);
+  const [warningMessage, setWarningMessage] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -22,6 +23,7 @@ export default function ContactContainer() {
     setSendError("");
     setTestMailUrl("");
     setIsTestMail(false);
+    setWarningMessage("");
     setIsSending(true);
 
     try {
@@ -45,6 +47,9 @@ export default function ContactContainer() {
       
       if (data.success) {
         setSubmitted(true);
+        if (data.warning) {
+          setWarningMessage(data.warning);
+        }
         if (data.isTestAccount && data.testUrl) {
           setTestMailUrl(data.testUrl);
           setIsTestMail(true);
@@ -141,16 +146,29 @@ export default function ContactContainer() {
         {/* RIGHT COMPONENT: Elegant input form (7/12 layout) */}
         <div className="md:col-span-7">
           {submitted ? (
-            <div className="glass-panel border p-10 rounded-3xl text-center space-y-4 shadow-sm animate-fade-in-up">
+            <div className="glass-panel border p-10 rounded-3xl text-center space-y-4 shadow-sm animate-fade-in-up bg-white dark:bg-neutral-900">
               <div className="h-12 w-12 rounded-full bg-emerald-500/15 border border-emerald-500/20 text-emerald-600 flex items-center justify-center mx-auto">
                 <CheckCircle className="h-6 w-6" />
               </div>
-              <h3 className="font-sans text-lg font-bold text-neutral-900 dark:text-white">訊息已成功寄送出！</h3>
-              <p className="text-xs text-neutral-500 dark:text-neutral-405 leading-relaxed max-w-sm mx-auto">
-                我們已成功收悉您的洽詢內容。自動寄件伺服器已將您的詳細諮詢意向成功轉發至 Bob 的電子信箱（tonicbov@gmail.com）。Bob 將透過電郵為您親自解答。
-              </p>
+              <h3 className="font-sans text-lg font-bold text-neutral-900 dark:text-white">訊息已儲存並傳送！</h3>
+              
+              {warningMessage ? (
+                <div className="bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/40 p-4 rounded-xl text-left text-xs text-blue-850 dark:text-blue-300 space-y-1.5 mt-2">
+                  <div className="flex items-center gap-1.5 font-bold text-blue-800 dark:text-blue-400">
+                    <CheckCircle className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>資料庫備份儲存成功</span>
+                  </div>
+                  <p className="leading-relaxed text-[12px] text-neutral-700 dark:text-neutral-300">
+                    {warningMessage}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-neutral-500 dark:text-neutral-405 leading-relaxed max-w-sm mx-auto">
+                  我們已成功收悉您的洽詢內容。自動寄件伺服器已將您的詳細諮詢意向成功轉發至 Bob 的電子信箱（tonicbov@gmail.com）。Bob 將透過電郵為您親自解答。
+                </p>
+              )}
 
-              {isTestMail && testMailUrl && (
+              {isTestMail && testMailUrl && !warningMessage && (
                 <div className="bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 p-4 rounded-xl text-left text-xs text-amber-850 dark:text-amber-300 space-y-2 mt-4">
                   <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-400">
                     <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
@@ -176,6 +194,7 @@ export default function ContactContainer() {
                   setSubmitted(false);
                   setTestMailUrl("");
                   setIsTestMail(false);
+                  setWarningMessage("");
                 }}
                 className="text-xs font-semibold text-blue-650 hover:underline inline-block mt-4"
               >
