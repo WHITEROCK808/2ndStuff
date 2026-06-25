@@ -1,17 +1,27 @@
 import React, { useState, useRef, useMemo, useEffect } from "react";
+import QRCode from "qrcode";
 import { 
   ShieldCheck, Lock, Sparkles, Plus, Edit2, Trash2, Check, X, Truck, Eye, Save, DollarSign,
   Package, ShoppingCart, Users, Settings, Tag, RefreshCw, Star, UploadCloud, AlertCircle, EyeOff, UserCheck,
-  Mail, Send
+  Database, Download, ArrowUp, ArrowDown, ChevronsUp
 } from "lucide-react";
 import { Product, Order, Customer, SystemSettings } from "../types";
-import { getGeminiSuggestions } from "../lib/api";
+import {
+  downloadDatabaseBackup,
+  getGeminiSuggestions,
+  getStorageStatus,
+  restoreDatabaseBackup,
+  type StorageStatus,
+} from "../lib/api";
+import { formatBytes, optimizeImageForUpload } from "../lib/image";
+
+const MAX_PRODUCT_IMAGE_COUNT = 10;
+const MAX_SOURCE_IMAGE_BYTES = 30 * 1024 * 1024;
 
 interface AdminContainerProps {
   products: Product[];
   orders: Order[];
   customers: Customer[];
-  messages?: any[];
   settings: SystemSettings;
   isAdmin: boolean;
   onLoginAdmin: () => void;
@@ -19,65 +29,15 @@ interface AdminContainerProps {
   onAddProduct: (product: Partial<Product>) => Promise<void>;
   onUpdateProduct: (id: string, product: Partial<Product>) => Promise<void>;
   onDeleteProduct: (id: string) => Promise<void>;
+  onReorderProducts: (productIds: string[]) => Promise<void>;
   onUpdateOrder: (id: string, orderData: Partial<Order>) => Promise<void>;
   onUpdateSettings: (settings: Partial<SystemSettings>) => Promise<void>;
-  onMarkMessageRead?: (id: string) => Promise<void>;
-  onDeleteMessage?: (id: string) => Promise<void>;
-}
-
-function compressImage(base64Str: string, maxWidth = 1000, maxHeight = 1000, quality = 0.75): Promise<string> {
-  return new Promise((resolve) => {
-    if (!base64Str || !base64Str.startsWith("data:image")) {
-      resolve(base64Str);
-      return;
-    }
-    const img = new Image();
-    img.src = base64Str;
-    img.onload = () => {
-      let width = img.width;
-      let height = img.height;
-
-      if (width <= maxWidth && height <= maxHeight) {
-        resolve(base64Str);
-        return;
-      }
-
-      if (width > height) {
-        if (width > maxWidth) {
-          height = Math.round((height * maxWidth) / width);
-          width = maxWidth;
-        }
-      } else {
-        if (height > maxHeight) {
-          width = Math.round((width * maxHeight) / height);
-          height = maxHeight;
-        }
-      }
-
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.drawImage(img, 0, 0, width, height);
-        const compressed = canvas.toDataURL("image/jpeg", quality);
-        resolve(compressed);
-      } else {
-        resolve(base64Str);
-      }
-    };
-    img.onerror = () => {
-      resolve(base64Str);
-    };
-  });
 }
 
 export default function AdminContainer({
   products,
   orders,
   customers,
-  messages = [],
   settings,
   isAdmin,
   onLoginAdmin,
@@ -85,10 +45,9 @@ export default function AdminContainer({
   onAddProduct,
   onUpdateProduct,
   onDeleteProduct,
+  onReorderProducts,
   onUpdateOrder,
   onUpdateSettings,
-  onMarkMessageRead,
-  onDeleteMessage,
 }: AdminContainerProps) {
   // Login states
   const [passcode, setPasscode] = useState("");
@@ -96,7 +55,7 @@ export default function AdminContainer({
   const [showPasscode, setShowPasscode] = useState(false);
 
   // Layout tabs inside dashboard
-  const [adminTab, setAdminTab] = useState<"metrics" | "products" | "orders" | "customers" | "settings" | "messages">("metrics");
+  const [adminTab, setAdminTab] = useState<"metrics" | "products" | "orders" | "customers" | "settings">("metrics");
 
   // Managing products edit/create forms
   const [selectedProductForEdit, setSelectedProductForEdit] = useState<Product | null>(null);
@@ -126,6 +85,9 @@ export default function AdminContainer({
   // Product Photo upload refs and link paste inputs
   const productImagesFileRef = useRef<HTMLInputElement>(null);
   const [pasteUrlInput, setPasteUrlInput] = useState("");
+  const [isProductImagesProcessing, setIsProductImagesProcessing] = useState(false);
+  const [imageProcessingProgress, setImageProcessingProgress] = useState({ current: 0, total: 0 });
+  const [imageOptimizationSummary, setImageOptimizationSummary] = useState("");
 
   // Smart AI Suggestions States (Gemini API)
   const [aiImageBase64, setAiImageBase64] = useState("");
@@ -136,6 +98,33 @@ export default function AdminContainer({
   const aiFileRef = useRef<HTMLInputElement>(null);
   const [formErrorMessage, setFormErrorMessage] = useState("");
   const [isFormSubmitting, setIsFormSubmitting] = useState(false);
+  const [reorderingProductId, setReorderingProductId] = useState<string | null>(null);
+
+  const handleMoveProduct = async (fromIndex: number, toIndex: number) => {
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= products.length ||
+      toIndex >= products.length
+    ) {
+      return;
+    }
+
+    const reorderedProducts = [...products];
+    const [movedProduct] = reorderedProducts.splice(fromIndex, 1);
+    reorderedProducts.splice(toIndex, 0, movedProduct);
+    setReorderingProductId(movedProduct.id);
+
+    try {
+      await onReorderProducts(reorderedProducts.map((product) => product.id));
+    } catch (error) {
+      console.error(error);
+      alert("展示順位更新失敗，請稍後再試。");
+    } finally {
+      setReorderingProductId(null);
+    }
+  };
 
   // Action input states for Order trackings
   const [focusedOrder, setFocusedOrder] = useState<Order | null>(null);
@@ -181,11 +170,23 @@ export default function AdminContainer({
     totpSecret: string;
     totpUri: string;
   } | null>(null);
+  const [totpQrDataUrl, setTotpQrDataUrl] = useState("");
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [isBackupBusy, setIsBackupBusy] = useState(false);
+  const backupFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (!isAdmin) {
+      setSecurityInfo(null);
+      setTotpQrDataUrl("");
+      setStorageStatus(null);
+      return;
+    }
+
     const fetchSecurityInfo = async () => {
       try {
         const res = await fetch("/api/admin/security-info");
+        if (!res.ok) throw new Error(`Security info request failed with ${res.status}`);
         const data = await res.json();
         setSecurityInfo(data);
       } catch (err) {
@@ -193,7 +194,28 @@ export default function AdminContainer({
       }
     };
     fetchSecurityInfo();
+    getStorageStatus()
+      .then(setStorageStatus)
+      .catch((err) => console.error("Failed to load storage status:", err));
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (!securityInfo?.totpUri) {
+      setTotpQrDataUrl("");
+      return;
+    }
+
+    QRCode.toDataURL(securityInfo.totpUri, {
+      width: 260,
+      margin: 1,
+      errorCorrectionLevel: "M",
+    })
+      .then(setTotpQrDataUrl)
+      .catch((err) => {
+        console.error("Failed to render local TOTP QR code:", err);
+        setTotpQrDataUrl("");
+      });
+  }, [securityInfo?.totpUri]);
 
   // 1. Authenticate locally with TouchID bypass indicator
   const handleAdminSignIn = async (e: React.FormEvent) => {
@@ -220,118 +242,99 @@ export default function AdminContainer({
   const metrics = useMemo(() => {
     const totalProducts = products.length;
     const availableProducts = products.filter(p => p.status === "Available").length;
-    const soldProducts = products.filter(p => p.status === "Sold").length;
     const pendingOrders = orders.filter(o => o.status === "Pending Verification" || o.status === "Balance Pending").length;
 
-    // Revenue calculations (Sum of actual total amounts for orders approved/shipped/completed or deposit sums)
-    const totalRevenue = orders
-      .filter(o => o.status !== "Cancelled")
-      .reduce((sum, o) => {
-        if (o.status === "Pending Verification") {
-          return sum; // Skip till verified or deposit cleared
-        }
-        if (o.status === "Deposit Paid") {
-          return sum + o.depositPaid;
-        }
-        return sum + o.totalAmount;
-      }, 0);
-
-    // Monthly revenue simulation (orders inside last 30 days)
-    const monthlyRevenue = orders
-      .filter(o => o.status !== "Cancelled")
-      .reduce((sum, o) => {
-        return sum + o.totalAmount;
-      }, 0) * 0.85; // Simulated percentage of settled monthly parameters
-
-    return { totalProducts, availableProducts, soldProducts, pendingOrders, totalRevenue, monthlyRevenue };
+    return { totalProducts, availableProducts, pendingOrders };
   }, [products, orders]);
 
   // Handle image conversion to Base64 for Gemini AI helper context
-  const handleAiImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAiImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       setAiImageFileName(file.name);
-      const reader = new FileReader();
-      reader.onload = async () => {
-        if (typeof reader.result === "string") {
-          try {
-            const compressed = await compressImage(reader.result, 1200, 1200, 0.75);
-            setAiImageBase64(compressed);
-          } catch (err) {
-            setAiImageBase64(reader.result);
-          }
-        }
-      };
-      reader.readAsDataURL(file);
+      try {
+        const optimized = await optimizeImageForUpload(file);
+        setAiImageBase64(optimized.dataUrl);
+      } catch (error) {
+        console.error("Failed to optimize Gemini reference image:", error);
+        setFormErrorMessage(
+          error instanceof Error ? error.message : "AI 參考照片處理失敗，請重新選取。",
+        );
+      }
     }
   };
 
-  // Product Photos File Upload converting multiple files to Base64 (Promise-based asynchronous batch reader to prevent stale state closures)
+  // Resize and compress local photos before storing them as Base64.
   const handleProductPhotosUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const readPromises = (Array.from(files) as File[]).map((file) => {
-      return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = async () => {
-          if (typeof reader.result === "string") {
-            try {
-              const compressed = await compressImage(reader.result, 1200, 1200, 0.75);
-              resolve(compressed);
-            } catch (err) {
-              resolve(reader.result);
-            }
-          } else {
-            reject(new Error("Failed to read file as string"));
-          }
-        };
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-      });
-    });
+    const existingCount = (pfImageUrl ? 1 : 0) + pfImages.length;
+    const availableSlots = Math.max(0, MAX_PRODUCT_IMAGE_COUNT - existingCount);
+    const selectedFiles = (Array.from(files) as File[]).slice(0, availableSlots);
+    const oversizedFiles = selectedFiles.filter((file) => file.size > MAX_SOURCE_IMAGE_BYTES);
+    const acceptedFiles = selectedFiles.filter((file) => file.size <= MAX_SOURCE_IMAGE_BYTES);
 
+    if (availableSlots === 0) {
+      alert(`每件商品最多可放 ${MAX_PRODUCT_IMAGE_COUNT} 張照片。`);
+      e.target.value = "";
+      return;
+    }
+    if (files.length > availableSlots) {
+      alert(`本次僅加入前 ${availableSlots} 張，單件商品上限為 ${MAX_PRODUCT_IMAGE_COUNT} 張。`);
+    }
+    if (oversizedFiles.length > 0) {
+      alert(`已略過 ${oversizedFiles.length} 張超過 30 MB 的照片。`);
+    }
+    if (acceptedFiles.length === 0) {
+      e.target.value = "";
+      return;
+    }
+
+    setIsProductImagesProcessing(true);
+    setImageOptimizationSummary("");
+    setImageProcessingProgress({ current: 0, total: acceptedFiles.length });
     try {
-      const results = await Promise.all(readPromises);
+      const results: string[] = [];
+      let originalBytes = 0;
+      let optimizedBytes = 0;
+      const failures: string[] = [];
+
+      for (let index = 0; index < acceptedFiles.length; index += 1) {
+        const file = acceptedFiles[index];
+        setImageProcessingProgress({ current: index + 1, total: acceptedFiles.length });
+        try {
+          const optimized = await optimizeImageForUpload(file);
+          results.push(optimized.dataUrl);
+          originalBytes += optimized.originalBytes;
+          optimizedBytes += optimized.optimizedBytes;
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : file.name);
+        }
+      }
+
       if (results.length === 0) return;
 
-      const currentFeaturedEmpty = !pfImageUrl;
+      const nextResults = [...results];
+      if (!pfImageUrl) {
+        setPfImageUrl(nextResults.shift() || "");
+      }
+      setPfImages((prev) => [...prev, ...nextResults.filter((image) => !prev.includes(image))]);
 
-      if (currentFeaturedEmpty) {
-        // Set first photo as main featured image
-        setPfImageUrl(results[0]);
-        
-        // Add remaining photos (if any) to secondary images list
-        if (results.length > 1) {
-          const restImages = results.slice(1);
-          setPfImages((prev) => {
-            const combined = [...prev];
-            restImages.forEach((img) => {
-              if (!combined.includes(img)) {
-                combined.push(img);
-              }
-            });
-            return combined;
-          });
-        }
-      } else {
-        // Main featured image already exists, so append all selected pictures to secondary image array
-        setPfImages((prev) => {
-          const combined = [...prev];
-          results.forEach((img) => {
-            if (!combined.includes(img) && img !== pfImageUrl) {
-              combined.push(img);
-            }
-          });
-          return combined;
-        });
+      setImageOptimizationSummary(
+        `已最佳化 ${results.length} 張：${formatBytes(originalBytes)} → ${formatBytes(optimizedBytes)}`,
+      );
+      if (failures.length > 0) {
+        alert(`有 ${failures.length} 張圖片無法處理：\n${failures.join("\n")}`);
       }
     } catch (err) {
       console.error("Failed to read user files:", err);
-    }
-
-    if (productImagesFileRef.current) {
-      productImagesFileRef.current.value = "";
+      setFormErrorMessage(err instanceof Error ? err.message : "圖片最佳化失敗，請重新選取照片。");
+    } finally {
+      setIsProductImagesProcessing(false);
+      if (productImagesFileRef.current) {
+        productImagesFileRef.current.value = "";
+      }
     }
   };
 
@@ -339,6 +342,11 @@ export default function AdminContainer({
   const handleAddImageUrl = () => {
     const trimmed = pasteUrlInput.trim();
     if (!trimmed) return;
+
+    if ((pfImageUrl ? 1 : 0) + pfImages.length >= MAX_PRODUCT_IMAGE_COUNT) {
+      alert(`每件商品最多可放 ${MAX_PRODUCT_IMAGE_COUNT} 張照片。`);
+      return;
+    }
 
     if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://") && !trimmed.startsWith("data:image")) {
       alert("請輸入完整的圖片 URL (以 http:// 或 https:// 開頭)！");
@@ -449,6 +457,11 @@ export default function AdminContainer({
     e.preventDefault();
     setFormErrorMessage("");
 
+    if (isProductImagesProcessing) {
+      setFormErrorMessage("照片仍在最佳化，請稍候完成後再發布。");
+      return;
+    }
+
     // Programmatic Custom Validation Checks
     if (!pfTitle.trim()) {
       setFormErrorMessage("請填寫「商品名稱」！");
@@ -549,6 +562,7 @@ export default function AdminContainer({
     setPfImageUrl("");
     setPfImages([]);
     setPasteUrlInput("");
+    setImageOptimizationSummary("");
     setPfSeoKeywords("");
     setIsProductFormOpen(true);
     setAiImageBase64("");
@@ -579,6 +593,7 @@ export default function AdminContainer({
     setPfImageUrl(p.imageUrl);
     setPfImages(p.images || []);
     setPasteUrlInput("");
+    setImageOptimizationSummary("");
     setPfSeoKeywords(p.seoKeywords.join(", "));
     setIsProductFormOpen(true);
     setAiSuccessMessage("");
@@ -604,6 +619,47 @@ export default function AdminContainer({
       servicePolicy: settServicePolicy,
     });
     alert("商店業務參數與政策設定已成功更新！");
+  };
+
+  const handleDownloadBackup = async () => {
+    setIsBackupBusy(true);
+    try {
+      const blob = await downloadDatabaseBackup();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `bob-vault-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert("備份下載失敗，請確認管理員登入仍有效。");
+    } finally {
+      setIsBackupBusy(false);
+    }
+  };
+
+  const handleRestoreBackup = async (file: File) => {
+    if (!window.confirm("還原會以此備份取代目前全部商品、訂單、客戶與設定。確定繼續嗎？")) {
+      if (backupFileRef.current) backupFileRef.current.value = "";
+      return;
+    }
+
+    setIsBackupBusy(true);
+    try {
+      const backup = JSON.parse(await file.text());
+      const result = await restoreDatabaseBackup(backup);
+      alert(`還原完成：${result.productCount} 件商品、${result.orderCount} 筆訂單。`);
+      window.location.reload();
+    } catch (err) {
+      console.error(err);
+      alert("還原失敗：檔案格式不正確，或管理員登入已失效。");
+    } finally {
+      setIsBackupBusy(false);
+      if (backupFileRef.current) backupFileRef.current.value = "";
+    }
   };
 
   // Render Lock screen if !isAdmin
@@ -691,7 +747,6 @@ export default function AdminContainer({
           { id: "products", label: "珍藏庫商品管理", icon: Package },
           { id: "orders", label: "匯款憑證審核與訂單", icon: ShoppingCart },
           { id: "customers", label: "藏友顧客名冊", icon: Users },
-          { id: "messages", label: "留言洽詢信箱", icon: Mail },
           { id: "settings", label: "匯款配置與營運政策", icon: Settings }
         ].map((tab) => {
           const TabIcon = tab.icon;
@@ -719,22 +774,7 @@ export default function AdminContainer({
       {/* TAB 1: METRICS HIGHLIGHT PANELS */}
       {adminTab === "metrics" && (
         <section className="space-y-8 animate-fade-in-up">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            
-            {/* Net revenue */}
-            <div className="glass-panel border p-6 rounded-2xl">
-              <span className="text-[10px] uppercase font-bold text-neutral-450 font-mono tracking-tight block">總收訖營業額</span>
-              <p className="text-3xl font-extrabold text-neutral-900 dark:text-white mt-1.5">NT$ {metrics.totalRevenue.toLocaleString()}</p>
-              <span className="text-[10px] text-emerald-500 block mt-2 font-mono">• 已核對實匯全額與訂金款額總和</span>
-            </div>
-
-            {/* Estimated monthly revenue */}
-            <div className="glass-panel border p-6 rounded-2xl">
-              <span className="text-[10px] uppercase font-bold text-neutral-450 font-mono tracking-tight block">近 30 天估算營收</span>
-              <p className="text-3xl font-extrabold text-neutral-900 dark:text-white mt-1.5">NT$ {metrics.monthlyRevenue.toLocaleString()}</p>
-              <span className="text-[10px] text-indigo-500 block mt-2 font-mono">• 交易與申購估算流動指標</span>
-            </div>
-
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {/* Vault counts */}
             <div className="glass-panel border p-6 rounded-2xl">
               <span className="text-[10px] uppercase font-bold text-neutral-450 font-mono tracking-tight block font-sans">珍藏庫商品總數</span>
@@ -1092,11 +1132,24 @@ export default function AdminContainer({
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
+                        disabled={isProductImagesProcessing || isFormSubmitting}
                         onClick={() => productImagesFileRef.current?.click()}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3.5 py-2.5 rounded-xl font-medium flex items-center gap-1.5 transition shrink-0 cursor-pointer shadow-sm active:scale-95 border border-indigo-500"
+                        className={`text-white text-xs px-3.5 py-2.5 rounded-xl font-medium flex items-center gap-1.5 transition shrink-0 shadow-sm border ${
+                          isProductImagesProcessing || isFormSubmitting
+                            ? "bg-indigo-400 border-indigo-300 cursor-not-allowed"
+                            : "bg-indigo-600 hover:bg-indigo-700 cursor-pointer active:scale-95 border-indigo-500"
+                        }`}
                       >
-                        <UploadCloud className="w-4 h-4 text-white" />
-                        <span>上傳本機多相片</span>
+                        {isProductImagesProcessing ? (
+                          <RefreshCw className="w-4 h-4 text-white animate-spin" />
+                        ) : (
+                          <UploadCloud className="w-4 h-4 text-white" />
+                        )}
+                        <span>
+                          {isProductImagesProcessing
+                            ? `最佳化 ${imageProcessingProgress.current}/${imageProcessingProgress.total}`
+                            : "上傳本機多相片"}
+                        </span>
                       </button>
                       <input
                         type="file"
@@ -1108,6 +1161,32 @@ export default function AdminContainer({
                       />
                     </div>
                   </div>
+
+                  {isProductImagesProcessing && (
+                    <div className="bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-xl p-3 space-y-2">
+                      <div className="flex items-center justify-between text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">
+                        <span>正在瀏覽器內縮圖與壓縮，不會上傳原始大檔</span>
+                        <span>{imageProcessingProgress.current}/{imageProcessingProgress.total}</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-indigo-100 dark:bg-neutral-800 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-indigo-600 transition-all duration-300"
+                          style={{
+                            width: `${Math.max(
+                              8,
+                              (imageProcessingProgress.current / Math.max(1, imageProcessingProgress.total)) * 100,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {!isProductImagesProcessing && imageOptimizationSummary && (
+                    <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/50 rounded-xl px-3 py-2 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                      {imageOptimizationSummary}，發布時將直接使用輕量版本。
+                    </div>
+                  )}
 
                   {/* Add Image via URL row */}
                   <div className="flex gap-2">
@@ -1271,8 +1350,8 @@ export default function AdminContainer({
                       <span className="flex items-center gap-2">
                         <RefreshCw className="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400" />
                         {pfImages.length > 0
-                          ? `主機正在解析多張高畫質大圖（共 ${pfImages.length + 1} 張相片）並傳輸發布中...`
-                          : "主機正在同步商品資料與上傳中..."}
+                          ? `正在送出已最佳化照片（共 ${pfImages.length + 1} 張）...`
+                          : "正在同步商品資料..."}
                       </span>
                       <span className="font-mono text-[10px] bg-blue-100 dark:bg-blue-900/50 px-2 py-0.5 rounded-full text-blue-800 dark:text-blue-300">
                         UPLOADING
@@ -1283,7 +1362,7 @@ export default function AdminContainer({
                       <div className="absolute inset-y-0 h-full bg-blue-600 dark:bg-blue-500 rounded-full animate-slide-progress" style={{ width: '40%' }} />
                     </div>
                     <p className="text-[10px] text-neutral-500 leading-relaxed font-normal">
-                      提示：多張商品大圖或本機相片傳輸將需要數秒鐘處理，請耐心等候，切勿關閉視窗。
+                      照片已在瀏覽器內完成縮圖壓縮，現在只傳送輕量版本。
                     </p>
                   </div>
                 )}
@@ -1292,10 +1371,10 @@ export default function AdminContainer({
                 <div className="md:col-span-3 flex justify-end space-x-3.5 pt-4">
                   <button
                     type="button"
-                    disabled={isFormSubmitting}
+                    disabled={isFormSubmitting || isProductImagesProcessing}
                     onClick={() => setIsProductFormOpen(false)}
                     className={`text-xs font-semibold border rounded-xl px-4 py-2 text-neutral-600 transition ${
-                      isFormSubmitting 
+                      isFormSubmitting || isProductImagesProcessing
                         ? "opacity-50 cursor-not-allowed" 
                         : "cursor-pointer hover:border-neutral-400"
                     }`}
@@ -1305,14 +1384,19 @@ export default function AdminContainer({
                   <button
                     type="submit"
                     id="pf-submit-btn"
-                    disabled={isFormSubmitting}
+                    disabled={isFormSubmitting || isProductImagesProcessing}
                     className={`text-white text-xs font-semibold rounded-xl px-5 py-2 transition flex items-center justify-center gap-1.5 ${
-                      isFormSubmitting 
+                      isFormSubmitting || isProductImagesProcessing
                         ? "bg-blue-400 dark:bg-blue-500 cursor-not-allowed opacity-75" 
                         : "bg-blue-600 hover:bg-blue-700 cursor-pointer"
                     }`}
                   >
-                    {isFormSubmitting ? (
+                    {isProductImagesProcessing ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>照片最佳化中...</span>
+                      </>
+                    ) : isFormSubmitting ? (
                       <>
                         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                         <span>正在發布上架中...</span>
@@ -1338,12 +1422,13 @@ export default function AdminContainer({
                   <th className="p-4">分類</th>
                   <th className="p-4">出讓價格</th>
                   <th className="p-4">品相狀態</th>
+                  <th className="p-4">展示順位</th>
                   <th className="p-4">狀態</th>
                   <th className="p-4 text-right">管理操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {products.map((p) => (
+                {products.map((p, index) => (
                   <tr key={p.id} className="hover:bg-neutral-50/40">
                     <td className="p-4 flex items-center space-x-3.5">
                       <img src={p.imageUrl} alt="" className="h-9 w-12 object-cover rounded border" />
@@ -1355,6 +1440,38 @@ export default function AdminContainer({
                     <td className="p-4 capitalize">{p.categorySlug === 'electronics' ? '3C數位' : p.categorySlug === 'photography' ? '攝影攝影' : p.categorySlug === 'audio' ? '極致音訊' : p.categorySlug === 'gaming' ? '遊戲雙卡' : p.categorySlug === 'home' ? '居家辦公' : p.categorySlug === 'books' ? '絕版書籍' : p.categorySlug === 'collectibles' ? '珍稀收藏' : '其他'}</td>
                     <td className="p-4 font-semibold">NT$ {p.price.toLocaleString()}</td>
                     <td className="p-4">{p.conditionPercentage}% 新</td>
+                    <td className="p-4">
+                      <div className="flex items-center gap-1">
+                        <span className="w-7 font-mono text-[10px] text-neutral-400">#{index + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveProduct(index, 0)}
+                          disabled={index === 0 || reorderingProductId !== null}
+                          className="rounded-md p-1.5 text-neutral-500 transition hover:bg-neutral-100 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-25 dark:hover:bg-neutral-800"
+                          title="移到最前面"
+                        >
+                          <ChevronsUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveProduct(index, index - 1)}
+                          disabled={index === 0 || reorderingProductId !== null}
+                          className="rounded-md p-1.5 text-neutral-500 transition hover:bg-neutral-100 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-25 dark:hover:bg-neutral-800"
+                          title="向前一位"
+                        >
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveProduct(index, index + 1)}
+                          disabled={index === products.length - 1 || reorderingProductId !== null}
+                          className="rounded-md p-1.5 text-neutral-500 transition hover:bg-neutral-100 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-25 dark:hover:bg-neutral-800"
+                          title="向後一位"
+                        >
+                          <ArrowDown className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </td>
                     <td className="p-4">
                       <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
                         p.status === "Available" ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"
@@ -1388,19 +1505,30 @@ export default function AdminContainer({
 
           {/* Simple grid list for mobiles */}
           <div className="grid grid-cols-1 gap-4 md:hidden">
-            {products.map(p => (
-              <div key={p.id} className="glass-panel border p-4 rounded-xl flex space-x-3 items-center justify-between">
-                <div className="flex items-center space-x-3 min-w-0">
+            {products.map((p, index) => (
+              <div key={p.id} className="glass-panel border p-4 rounded-xl space-y-3">
+                <div className="flex space-x-3 items-center justify-between">
+                  <div className="flex items-center space-x-3 min-w-0">
                   <img src={p.imageUrl} alt="" className="h-10 w-14 object-cover rounded border shrink-0" />
                   <div className="min-w-0">
                     <p className="font-semibold text-neutral-850 dark:text-neutral-100 truncate text-xs">{p.title}</p>
                     <p className="text-[10px] text-neutral-400">NT$ {p.price.toLocaleString()}</p>
                   </div>
+                  </div>
+
+                  <div className="flex space-x-1 shrink-0">
+                    <button onClick={() => openEditProductForm(p)} className="p-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-blue-500"><Edit2 className="h-4.5 w-4.5" /></button>
+                    <button onClick={() => { if(confirm("確定要刪除這件寶貴的商品物件嗎？")) onDeleteProduct(p.id); }} className="p-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-red-500"><Trash2 className="h-4.5 w-4.5" /></button>
+                  </div>
                 </div>
 
-                <div className="flex space-x-1 shrink-0">
-                  <button onClick={() => openEditProductForm(p)} className="p-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-blue-500"><Edit2 className="h-4.5 w-4.5" /></button>
-                  <button onClick={() => { if(confirm("確定要刪除這件寶貴的商品物件嗎？")) onDeleteProduct(p.id); }} className="p-2 bg-neutral-100 dark:bg-neutral-800 rounded-lg text-red-500"><Trash2 className="h-4.5 w-4.5" /></button>
+                <div className="flex items-center justify-between border-t pt-3 dark:border-neutral-800">
+                  <span className="font-mono text-[10px] text-neutral-400">前端展示 #{index + 1}</span>
+                  <div className="flex gap-1">
+                    <button type="button" onClick={() => handleMoveProduct(index, 0)} disabled={index === 0 || reorderingProductId !== null} className="rounded-lg bg-neutral-100 p-2 text-neutral-600 disabled:opacity-25 dark:bg-neutral-800" title="移到最前面"><ChevronsUp className="h-4 w-4" /></button>
+                    <button type="button" onClick={() => handleMoveProduct(index, index - 1)} disabled={index === 0 || reorderingProductId !== null} className="rounded-lg bg-neutral-100 p-2 text-neutral-600 disabled:opacity-25 dark:bg-neutral-800" title="向前一位"><ArrowUp className="h-4 w-4" /></button>
+                    <button type="button" onClick={() => handleMoveProduct(index, index + 1)} disabled={index === products.length - 1 || reorderingProductId !== null} className="rounded-lg bg-neutral-100 p-2 text-neutral-600 disabled:opacity-25 dark:bg-neutral-800" title="向後一位"><ArrowDown className="h-4 w-4" /></button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -1854,6 +1982,71 @@ export default function AdminContainer({
 
           </form>
 
+          <div className="bg-blue-50/70 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900 rounded-2xl p-6 mt-8 space-y-4">
+            <div className="flex items-center space-x-2">
+              <Database className="h-5 w-5 text-blue-600" />
+              <h3 className="font-sans text-sm font-bold text-neutral-900 dark:text-white">
+                資料庫持久化與備份
+              </h3>
+            </div>
+            <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
+              正式環境資料儲存在 <code>/data/db.json</code>。Zeabur 服務必須將 Volume 掛載到
+              <code> /data</code>，商品與照片才不會在重新部署後消失。
+            </p>
+
+            {storageStatus && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                <div className="rounded-xl bg-white/80 dark:bg-neutral-950 p-3 border dark:border-neutral-800">
+                  <p className="text-neutral-400">商品</p>
+                  <p className="font-bold mt-1">{storageStatus.productCount}</p>
+                </div>
+                <div className="rounded-xl bg-white/80 dark:bg-neutral-950 p-3 border dark:border-neutral-800">
+                  <p className="text-neutral-400">訂單</p>
+                  <p className="font-bold mt-1">{storageStatus.orderCount}</p>
+                </div>
+                <div className="rounded-xl bg-white/80 dark:bg-neutral-950 p-3 border dark:border-neutral-800">
+                  <p className="text-neutral-400">資料大小</p>
+                  <p className="font-bold mt-1">{formatBytes(storageStatus.databaseBytes)}</p>
+                </div>
+                <div className="rounded-xl bg-white/80 dark:bg-neutral-950 p-3 border dark:border-neutral-800">
+                  <p className="text-neutral-400">自動備份</p>
+                  <p className="font-bold mt-1">{storageStatus.backupCount} 份</p>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={handleDownloadBackup}
+                disabled={isBackupBusy}
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold text-xs rounded-xl px-4 py-3 flex items-center gap-2 transition"
+              >
+                <Download className="h-4 w-4" />
+                下載完整備份
+              </button>
+              <button
+                type="button"
+                onClick={() => backupFileRef.current?.click()}
+                disabled={isBackupBusy}
+                className="bg-white dark:bg-neutral-900 hover:bg-neutral-50 disabled:opacity-50 text-neutral-800 dark:text-neutral-100 border dark:border-neutral-700 font-semibold text-xs rounded-xl px-4 py-3 flex items-center gap-2 transition"
+              >
+                <UploadCloud className="h-4 w-4" />
+                還原備份
+              </button>
+              <input
+                ref={backupFileRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void handleRestoreBackup(file);
+                }}
+              />
+            </div>
+          </div>
+
           {/* Admin Security Settings Card */}
           <div className="bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl p-6 mt-8 space-y-4">
             <div className="flex items-center space-x-2">
@@ -1876,7 +2069,7 @@ export default function AdminContainer({
                   {"ADMIN_PASSCODE=YourSecurePassword"}
                 </pre>
                 <p className="text-[10px] text-neutral-400">
-                  （若未設定則系統內部登入密碼將預設為 <code>admin</code>，此設計使得整串密碼未出現在任何前端靜態 HTML / JS 檔案中）
+                  正式環境若未設定此變數，密碼登入會保持停用，避免預設密碼造成未授權存取。
                 </p>
               </div>
 
@@ -1895,11 +2088,13 @@ export default function AdminContainer({
                       <span>Google Authenticator：運作中</span>
                     </p>
                     
-                    <img 
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=130x130&data=${encodeURIComponent(securityInfo.totpUri)}`} 
-                      alt="Security Setup QR" 
-                      className="rounded-lg bg-white p-2 border shadow-sm w-[130px] h-[130px]"
-                    />
+                    {totpQrDataUrl && (
+                      <img
+                        src={totpQrDataUrl}
+                        alt="Security Setup QR"
+                        className="rounded-lg bg-white p-2 border shadow-sm w-[130px] h-[130px]"
+                      />
+                    )}
                     <p className="text-[9px] text-neutral-400 font-mono leading-none pt-1">
                       私鑰：{securityInfo.totpSecret}
                     </p>
@@ -1920,129 +2115,6 @@ export default function AdminContainer({
               </div>
             </div>
           </div>
-        </section>
-      )}
-
-      {/* TAB 6: CONTACT MESSAGES LIST */}
-      {adminTab === "messages" && (
-        <section className="space-y-6 animate-fade-in-up text-left">
-          <div className="flex justify-between items-center">
-            <div>
-              <h2 className="font-sans text-lg font-bold text-neutral-900 dark:text-white flex items-center gap-2">
-                <Mail className="h-5 w-5 text-blue-500" />
-                <span>訪客留言洽詢信箱</span>
-              </h2>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-                這裡收錄了所有來自前台「聯繫收藏家 Bob」表單送出的私藏洽詢與台北面鑑預約。
-              </p>
-            </div>
-            <div className="bg-blue-50 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/40 rounded-xl px-4 py-2 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-              <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">
-                未讀：{messages.filter((m: any) => m.status === "Unread").length} 封
-              </span>
-            </div>
-          </div>
-
-          {messages.length === 0 ? (
-            <div className="glass-panel border p-12 text-center rounded-2xl flex flex-col items-center justify-center space-y-3 bg-white dark:bg-neutral-900">
-              <div className="h-12 w-12 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-400 flex items-center justify-center">
-                <Mail className="h-6 w-6" />
-              </div>
-              <h4 className="text-sm font-bold text-neutral-700 dark:text-neutral-350">目前尚無任何留言</h4>
-              <p className="text-xs text-neutral-450 max-w-sm">
-                當前台用戶或潛在買家送出私藏意向或相約台北捷運面鑑表單時，留言將會即時記錄在此。
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {[...messages].sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map((msg: any) => {
-                const isUnread = msg.status === "Unread";
-                const topicLabels: Record<string, string> = {
-                  general: "一般珍藏諮詢",
-                  product_question: "特定物況細節詢問 / 圖檔索取",
-                  meetup: "特別約看 / 台北面鑑預約",
-                  payment_help: "銀行轉帳流程輔助說明",
-                };
-                return (
-                  <div 
-                    key={msg.id} 
-                    className={`glass-panel border p-5 rounded-2xl transition duration-250 bg-white dark:bg-neutral-900 ${
-                      isUnread 
-                        ? "border-blue-300 dark:border-blue-900 bg-blue-50/15 dark:bg-blue-950/5 ring-1 ring-blue-100 dark:ring-blue-900/20" 
-                        : "border-neutral-200 dark:border-neutral-800"
-                    }`}
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-                      <div className="space-y-1.5">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-sans font-bold text-neutral-900 dark:text-neutral-100 text-sm">
-                            {msg.name}
-                          </span>
-                          <span className="text-xs text-neutral-400 font-mono">
-                            &lt;{msg.email}&gt;
-                          </span>
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            msg.topic === "meetup" 
-                              ? "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400" 
-                              : msg.topic === "product_question"
-                              ? "bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-400"
-                              : "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400"
-                          }`}>
-                            {topicLabels[msg.topic] || msg.topic}
-                          </span>
-                          {isUnread && (
-                            <span className="bg-emerald-500 text-white text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider animate-pulse">
-                              NEW
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-neutral-400 font-mono">
-                          諮詢時間：{new Date(msg.createdAt).toLocaleString("zh-TW")}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 shrink-0">
-                        {isUnread && onMarkMessageRead && (
-                          <button
-                            onClick={() => onMarkMessageRead(msg.id)}
-                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold px-3 py-1.5 rounded-xl flex items-center gap-1 transition cursor-pointer"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            <span>標記已讀</span>
-                          </button>
-                        )}
-                        <a
-                          href={`mailto:${msg.email}?subject=Re: ${encodeURIComponent(topicLabels[msg.topic] || "")}&body=${encodeURIComponent(`\n\n=== 原始留言 ===\n${msg.message}`)}`}
-                          className="bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 text-[11px] font-bold px-3 py-1.5 rounded-xl flex items-center gap-1 transition"
-                        >
-                          <Send className="w-3.5 h-3.5" />
-                          <span>快速電郵回信</span>
-                        </a>
-                        {onDeleteMessage && (
-                          <button
-                            onClick={() => {
-                              if (confirm("您確定要刪除這封諮詢留言嗎？此動作無法復原。")) {
-                                onDeleteMessage(msg.id);
-                              }
-                            }}
-                            className="text-red-500 hover:text-red-700 dark:text-red-400 hover:bg-red-500/10 p-1.5 rounded-xl transition cursor-pointer"
-                            title="刪除留言"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mt-4 bg-neutral-50 dark:bg-neutral-900/40 p-4 rounded-xl border dark:border-neutral-800/80 text-xs text-neutral-850 dark:text-neutral-200 whitespace-pre-wrap leading-relaxed">
-                      {msg.message}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </section>
       )}
 

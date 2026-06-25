@@ -1,4 +1,4 @@
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import path from "path";
 import fs from "fs";
 import dotenv from "dotenv";
@@ -12,7 +12,26 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const DB_FILE = path.join(process.cwd(), "db.json");
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const DATA_DIR =
+  process.env.DATA_DIR || (IS_PRODUCTION ? "/data" : process.cwd());
+const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, "db.json");
+const DB_BACKUP_DIR = path.join(path.dirname(DB_FILE), "backups");
+const MAX_DB_BACKUPS = 10;
+const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || (IS_PRODUCTION ? "" : "admin");
+const ADMIN_TOTP_SECRET = process.env.ADMIN_TOTP_SECRET || "";
+const ADMIN_SESSION_COOKIE = "bob_admin_session";
+const ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
+const ADMIN_SESSION_SECRET =
+  process.env.ADMIN_SESSION_SECRET ||
+  crypto
+    .createHash("sha256")
+    .update(`${ADMIN_PASSCODE}:${ADMIN_TOTP_SECRET}:bobs-treasure-vault`)
+    .digest("hex");
+
+if (IS_PRODUCTION && !ADMIN_PASSCODE) {
+  console.warn("ADMIN_PASSCODE is not configured. Production password login is disabled.");
+}
 
 // Increase JSON limit to support base64 receipt uploads
 app.use(express.json({ limit: "50mb" }));
@@ -166,67 +185,8 @@ const defaultDb = {
       seoKeywords: ["herman miller aeron", "aeron size b", "ergonomic office chair", "second hand aeron"]
     }
   ],
-  orders: [
-    {
-      id: "ORD-928172",
-      productId: "prod-5",
-      productTitle: "Herman Miller Aeron Chair Onyx (Size B)",
-      productPrice: 32000,
-      paymentType: "Deposit",
-      discountApplied: 0,
-      totalAmount: 32000,
-      depositPaid: 9600,
-      balanceDue: 22400,
-      status: "Deposit Paid",
-      customerName: "Alex Mercer",
-      customerPhone: "+886 912 345 678",
-      customerEmail: "alex.mercer@gmail.com",
-      shippingAddress: "No. 88, Section 3, Xinyi Road, Da'an District, Taipei City",
-      notes: "Please call 30 minutes before arrival so I can ask the security guard to open the loading bay elevator.",
-      createdAt: "2026-06-10T08:14:00Z",
-      dueDate: "2026-06-13T08:14:00Z",
-      trackingNumber: "TRK-TWPost-A01",
-      shippingCarrier: "Taiwan Post LTL"
-    },
-    {
-      id: "ORD-110292",
-      productId: "prod-1",
-      productTitle: "MacBook Air M2 (13.6-inch)",
-      productPrice: 24500,
-      paymentType: "Full",
-      discountApplied: 1225,
-      totalAmount: 23275,
-      depositPaid: 0,
-      balanceDue: 0,
-      status: "Shipped",
-      customerName: "Jane Watson",
-      customerPhone: "+886 987 654 321",
-      customerEmail: "jane.watson@techcorp.com",
-      shippingAddress: "No. 1, Section 4, Roosevelt Road, Da'an District, Taipei City (NTU Campus)",
-      notes: "Leave with the dormitory security counter if I'm of class.",
-      createdAt: "2026-06-09T14:30:00Z",
-      trackingNumber: "TW-99882711",
-      shippingCarrier: "Black Cat Delivery Service"
-    }
-  ],
-  customers: [
-    {
-      id: "cust-1",
-      name: "Alex Mercer",
-      phone: "+886 912 345 678",
-      email: "alex.mercer@gmail.com",
-      address: "No. 88, Section 3, Xinyi Road, Da'an District, Taipei City",
-      orderIds: ["ORD-928172"]
-    },
-    {
-      id: "cust-2",
-      name: "Jane Watson",
-      phone: "+886 987 654 321",
-      email: "jane.watson@techcorp.com",
-      address: "No. 1, Section 4, Roosevelt Road, Da'an District, Taipei City (NTU Campus)",
-      orderIds: ["ORD-110292"]
-    }
-  ],
+  orders: [],
+  customers: [],
   settings: {
     bankName: "Cathay United Bank (國泰世華銀行)",
     bankCode: "013",
@@ -240,32 +200,204 @@ const defaultDb = {
   }
 };
 
-function readDb() {
-  try {
-    if (!fs.existsSync(DB_FILE)) {
-      fs.writeFileSync(DB_FILE, JSON.stringify(defaultDb, null, 2), "utf-8");
-      return defaultDb;
-    }
-    const content = fs.readFileSync(DB_FILE, "utf-8");
-    return JSON.parse(content);
-  } catch (err) {
-    console.error("Failed to read database:", err);
-    return defaultDb;
+function createInitialDb() {
+  const initialDb = structuredClone(defaultDb);
+  if (IS_PRODUCTION) {
+    initialDb.products = [];
+    initialDb.orders = [];
+    initialDb.customers = [];
+  }
+  return initialDb;
+}
+
+function isValidDb(data: any): boolean {
+  return (
+    data &&
+    Array.isArray(data.categories) &&
+    Array.isArray(data.products) &&
+    Array.isArray(data.orders) &&
+    Array.isArray(data.customers) &&
+    data.settings &&
+    typeof data.settings === "object"
+  );
+}
+
+function ensureDatabaseDirectories(): void {
+  fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+  fs.mkdirSync(DB_BACKUP_DIR, { recursive: true });
+}
+
+function listDatabaseBackups(): string[] {
+  if (!fs.existsSync(DB_BACKUP_DIR)) return [];
+  return fs
+    .readdirSync(DB_BACKUP_DIR)
+    .filter((name) => /^db-\d{14}-\d+\.json$/.test(name))
+    .sort()
+    .reverse();
+}
+
+function pruneDatabaseBackups(): void {
+  for (const backupName of listDatabaseBackups().slice(MAX_DB_BACKUPS)) {
+    fs.unlinkSync(path.join(DB_BACKUP_DIR, backupName));
   }
 }
 
-function writeDb(data: any) {
+function createDatabaseBackup(): string | null {
+  if (!fs.existsSync(DB_FILE)) return null;
+
+  ensureDatabaseDirectories();
+  const timestamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
+  const backupName = `db-${timestamp}-${Date.now()}.json`;
+  const backupPath = path.join(DB_BACKUP_DIR, backupName);
+  fs.copyFileSync(DB_FILE, backupPath);
+  pruneDatabaseBackups();
+  return backupPath;
+}
+
+function writeDb(data: any, options: { skipBackup?: boolean } = {}) {
+  if (!isValidDb(data)) {
+    throw new Error("Refusing to write an invalid database payload.");
+  }
+
+  ensureDatabaseDirectories();
+
+  const serialized = JSON.stringify(data, null, 2);
+  const temporaryFile = `${DB_FILE}.${process.pid}.${Date.now()}.tmp`;
   try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
-  } catch (err) {
-    console.error("Failed to write database:", err);
+    fs.writeFileSync(temporaryFile, serialized, "utf-8");
+    JSON.parse(fs.readFileSync(temporaryFile, "utf-8"));
+    fs.renameSync(temporaryFile, DB_FILE);
+  } finally {
+    if (fs.existsSync(temporaryFile)) fs.unlinkSync(temporaryFile);
+  }
+
+  if (!options.skipBackup) {
+    try {
+      createDatabaseBackup();
+    } catch (backupError) {
+      console.error("Database write succeeded, but backup creation failed:", backupError);
+    }
+  }
+}
+
+function readDb() {
+  ensureDatabaseDirectories();
+
+  if (!fs.existsSync(DB_FILE)) {
+    const initialDb = createInitialDb();
+    writeDb(initialDb, { skipBackup: true });
+    console.warn(
+      `Database initialized at ${DB_FILE}. Production starts empty until a backup is restored.`,
+    );
+    return initialDb;
+  }
+
+  try {
+    const data = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+    if (!isValidDb(data)) throw new Error("Database structure is invalid.");
+    return data;
+  } catch (primaryError) {
+    console.error("Failed to read primary database:", primaryError);
+    for (const backupName of listDatabaseBackups()) {
+      try {
+        const backupPath = path.join(DB_BACKUP_DIR, backupName);
+        const backup = JSON.parse(fs.readFileSync(backupPath, "utf-8"));
+        if (!isValidDb(backup)) continue;
+        writeDb(backup, { skipBackup: true });
+        console.warn(`Recovered database from ${backupPath}.`);
+        return backup;
+      } catch (backupError) {
+        console.error(`Failed to read database backup ${backupName}:`, backupError);
+      }
+    }
+    throw primaryError;
   }
 }
 
 // Ensure database file is generated right away
 readDb();
 
+function secureStringEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function parseCookies(req: Request): Record<string, string> {
+  const cookieHeader = req.headers.cookie || "";
+  return cookieHeader.split(";").reduce<Record<string, string>>((cookies, item) => {
+    const separatorIndex = item.indexOf("=");
+    if (separatorIndex === -1) return cookies;
+
+    const key = item.slice(0, separatorIndex).trim();
+    const value = item.slice(separatorIndex + 1).trim();
+    if (key) cookies[key] = decodeURIComponent(value);
+    return cookies;
+  }, {});
+}
+
+function createAdminSessionToken(): string {
+  const payload = Buffer.from(
+    JSON.stringify({ exp: Date.now() + ADMIN_SESSION_MAX_AGE_SECONDS * 1000 }),
+  ).toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", ADMIN_SESSION_SECRET)
+    .update(payload)
+    .digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifyAdminSessionToken(token: string): boolean {
+  try {
+    const [payload, signature] = token.split(".");
+    if (!payload || !signature) return false;
+
+    const expectedSignature = crypto
+      .createHmac("sha256", ADMIN_SESSION_SECRET)
+      .update(payload)
+      .digest("base64url");
+    if (!secureStringEqual(signature, expectedSignature)) return false;
+
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return typeof session.exp === "number" && session.exp > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function isAdminAuthenticated(req: Request): boolean {
+  const token = parseCookies(req)[ADMIN_SESSION_COOKIE];
+  return !!token && verifyAdminSessionToken(token);
+}
+
+function setAdminSessionCookie(res: Response): void {
+  const secureAttribute = IS_PRODUCTION ? "; Secure" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(createAdminSessionToken())}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${ADMIN_SESSION_MAX_AGE_SECONDS}${secureAttribute}`,
+  );
+}
+
+function clearAdminSessionCookie(res: Response): void {
+  const secureAttribute = IS_PRODUCTION ? "; Secure" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `${ADMIN_SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0${secureAttribute}`,
+  );
+}
+
+function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!isAdminAuthenticated(req)) {
+    return res.status(401).json({ error: "管理員登入已失效，請重新驗證。" });
+  }
+  next();
+}
+
 // Expose API Endpoints
+
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, service: "bobs-treasure-vault" });
+});
 
 // 1. Get Categories
 app.get("/api/categories", (req, res) => {
@@ -276,11 +408,108 @@ app.get("/api/categories", (req, res) => {
 // 2. Get Products
 app.get("/api/products", (req, res) => {
   const db = readDb();
-  res.json(db.products);
+  res.setHeader("Cache-Control", "no-store");
+  res.json(db.products.map(toClientProduct));
 });
 
+function isEmbeddedImage(source: unknown): source is string {
+  return typeof source === "string" && source.startsWith("data:image/");
+}
+
+function getProductImageSource(product: any, slot: string): string | null {
+  if (slot === "featured") {
+    return typeof product.imageUrl === "string" ? product.imageUrl : null;
+  }
+
+  const imageIndex = Number(slot);
+  if (!Number.isInteger(imageIndex) || imageIndex < 0 || !Array.isArray(product.images)) {
+    return null;
+  }
+  return typeof product.images[imageIndex] === "string" ? product.images[imageIndex] : null;
+}
+
+function getProductMediaUrl(product: any, slot: string, source: string): string {
+  const version = crypto.createHash("sha256").update(source).digest("hex").slice(0, 12);
+  return `/api/products/${encodeURIComponent(product.id)}/media/${slot}?v=${version}`;
+}
+
+function toClientProduct(product: any) {
+  const imageUrl = isEmbeddedImage(product.imageUrl)
+    ? getProductMediaUrl(product, "featured", product.imageUrl)
+    : product.imageUrl;
+  const images = Array.isArray(product.images)
+    ? product.images.map((image: unknown, index: number) =>
+        isEmbeddedImage(image) ? getProductMediaUrl(product, String(index), image) : image,
+      )
+    : [];
+
+  return {
+    ...product,
+    imageUrl,
+    images,
+  };
+}
+
+function resolveStoredImageReference(value: unknown, currentProduct: any): unknown {
+  if (typeof value !== "string") return value;
+
+  const match = value.match(/^\/api\/products\/([^/]+)\/media\/(featured|\d+)(?:\?.*)?$/);
+  if (!match || decodeURIComponent(match[1]) !== currentProduct.id) return value;
+
+  return getProductImageSource(currentProduct, match[2]) || value;
+}
+
+app.get("/api/products/:id/media/:slot", (req, res) => {
+  const db = readDb();
+  const product = db.products.find((item: any) => item.id === req.params.id);
+  if (!product) {
+    return res.status(404).json({ error: "Product not found" });
+  }
+
+  const source = getProductImageSource(product, req.params.slot);
+  if (!source) {
+    return res.status(404).json({ error: "Product image not found" });
+  }
+
+  if (!isEmbeddedImage(source)) {
+    return res.redirect(source);
+  }
+
+  const match = source.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s);
+  if (!match) {
+    return res.status(415).json({ error: "Unsupported embedded image" });
+  }
+
+  const imageBuffer = Buffer.from(match[2], "base64");
+  res.setHeader("Content-Type", match[1]);
+  res.setHeader("Content-Length", imageBuffer.length);
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.send(imageBuffer);
+});
+
+function validateProductImages(req: Request, res: Response, next: NextFunction) {
+  const secondaryImages = Array.isArray(req.body.images) ? req.body.images : [];
+  const images = [req.body.imageUrl, ...secondaryImages].filter(
+    (image): image is string => typeof image === "string" && image.length > 0,
+  );
+
+  if (images.length > 10) {
+    return res.status(400).json({ error: "單件商品最多可放 10 張照片。" });
+  }
+
+  const embeddedImageBytes = images
+    .filter((image) => image.startsWith("data:image/"))
+    .reduce((total, image) => total + Buffer.byteLength(image, "utf8"), 0);
+
+  if (embeddedImageBytes > 20 * 1024 * 1024) {
+    return res.status(413).json({ error: "商品照片資料過大，請縮小圖片後再試。" });
+  }
+
+  next();
+}
+
 // 3. Create Product (Admin)
-app.post("/api/products", (req, res) => {
+app.post("/api/products", requireAdmin, validateProductImages, (req, res) => {
   const db = readDb();
   const newProduct = {
     id: `prod-${Date.now()}`,
@@ -291,11 +520,35 @@ app.post("/api/products", (req, res) => {
   };
   db.products.push(newProduct);
   writeDb(db);
-  res.json(newProduct);
+  res.status(201).json(toClientProduct(newProduct));
+});
+
+// Reorder Products (Admin). The persisted array order is also the storefront order.
+app.put("/api/products/order", requireAdmin, (req, res) => {
+  const db = readDb();
+  const productIds = req.body?.productIds;
+
+  if (
+    !Array.isArray(productIds) ||
+    productIds.some((id: unknown) => typeof id !== "string") ||
+    new Set(productIds).size !== productIds.length ||
+    productIds.length !== db.products.length
+  ) {
+    return res.status(400).json({ error: "A complete, unique product ID list is required" });
+  }
+
+  const productsById = new Map(db.products.map((product: any) => [product.id, product]));
+  if (productIds.some((id: string) => !productsById.has(id))) {
+    return res.status(400).json({ error: "Product ID list contains an unknown product" });
+  }
+
+  db.products = productIds.map((id: string) => productsById.get(id));
+  writeDb(db);
+  res.json(db.products.map(toClientProduct));
 });
 
 // 4. Update Product (Admin)
-app.put("/api/products/:id", (req, res) => {
+app.put("/api/products/:id", requireAdmin, validateProductImages, (req, res) => {
   const db = readDb();
   const index = db.products.findIndex((p: any) => p.id === req.params.id);
   if (index === -1) {
@@ -305,16 +558,21 @@ app.put("/api/products/:id", (req, res) => {
     ...db.products[index],
     ...req.body,
     accessories: Array.isArray(req.body.accessories) ? req.body.accessories : (req.body.accessories || "").split(",").map((s: string) => s.trim()).filter(Boolean),
-    images: req.body.images || db.products[index].images,
+    imageUrl: resolveStoredImageReference(req.body.imageUrl, db.products[index]),
+    images: Array.isArray(req.body.images)
+      ? req.body.images.map((image: unknown) =>
+          resolveStoredImageReference(image, db.products[index]),
+        )
+      : db.products[index].images,
     seoKeywords: Array.isArray(req.body.seoKeywords) ? req.body.seoKeywords : (req.body.seoKeywords || "").split(",").map((s: string) => s.trim()).filter(Boolean),
   };
   db.products[index] = updatedProduct;
   writeDb(db);
-  res.json(updatedProduct);
+  res.json(toClientProduct(updatedProduct));
 });
 
 // 5. Delete Product (Admin)
-app.delete("/api/products/:id", (req, res) => {
+app.delete("/api/products/:id", requireAdmin, (req, res) => {
   const db = readDb();
   db.products = db.products.filter((p: any) => p.id !== req.params.id);
   writeDb(db);
@@ -328,7 +586,7 @@ app.get("/api/settings", (req, res) => {
 });
 
 // 7. Update Settings (Admin)
-app.post("/api/settings", (req, res) => {
+app.post("/api/settings", requireAdmin, (req, res) => {
   const db = readDb();
   db.settings = {
     ...db.settings,
@@ -486,35 +744,7 @@ app.post("/api/contact", async (req, res) => {
   }
 
   try {
-    // 1. Save locally in db.json first to guarantee receipt
-    const db = readDb();
-    if (!db.messages) db.messages = [];
-    const newMessage = {
-      id: `msg-${Date.now()}`,
-      name,
-      email,
-      topic,
-      message,
-      createdAt: new Date().toISOString(),
-      status: "Unread",
-    };
-    db.messages.push(newMessage);
-    writeDb(db);
-
-    // 2. Try to dispatch email via SMTP (Ethereal or user custom SMTP)
-    let mailResult;
-    try {
-      mailResult = await sendContactEmail({ name, email, topic, message });
-    } catch (mailErr: any) {
-      console.error("Nodemailer failed, but message saved to db:", mailErr);
-      // Fallback with clear indication that message is saved locally but email forwarding was simulated
-      mailResult = {
-        success: true,
-        simulated: true,
-        warning: `目前主機正處於離線備份模式。我們已將您的洽詢內容（編號 ${newMessage.id}）安全存入本站資料庫。Bob 登入後台即可直接查閱！`,
-      };
-    }
-
+    const mailResult = await sendContactEmail({ name, email, topic, message });
     res.json(mailResult);
   } catch (err: any) {
     console.error("Failed to process contact email dispatch:", err);
@@ -523,36 +753,6 @@ app.post("/api/contact", async (req, res) => {
       details: err.message || err 
     });
   }
-});
-
-// Contact Messages API
-app.get("/api/messages", (req, res) => {
-  const db = readDb();
-  res.json(db.messages || []);
-});
-
-app.post("/api/messages/:id/read", (req, res) => {
-  const db = readDb();
-  if (!db.messages) db.messages = [];
-  const msg = db.messages.find((m: any) => m.id === req.params.id);
-  if (msg) {
-    msg.status = "Read";
-    writeDb(db);
-    return res.json({ success: true, message: msg });
-  }
-  res.status(404).json({ error: "Message not found" });
-});
-
-app.delete("/api/messages/:id", (req, res) => {
-  const db = readDb();
-  if (!db.messages) db.messages = [];
-  const index = db.messages.findIndex((m: any) => m.id === req.params.id);
-  if (index !== -1) {
-    db.messages.splice(index, 1);
-    writeDb(db);
-    return res.json({ success: true });
-  }
-  res.status(404).json({ error: "Message not found" });
 });
 
 // 8. Get Orders
@@ -664,7 +864,7 @@ app.post("/api/orders", (req, res) => {
 });
 
 // 10. Update Order Status (Admin)
-app.put("/api/orders/:id", (req, res) => {
+app.put("/api/orders/:id", requireAdmin, (req, res) => {
   const db = readDb();
   const index = db.orders.findIndex((o: any) => o.id === req.params.id);
   if (index === -1) {
@@ -697,9 +897,50 @@ app.put("/api/orders/:id", (req, res) => {
 });
 
 // 11. Get Customers (Admin)
-app.get("/api/customers", (req, res) => {
+app.get("/api/customers", requireAdmin, (req, res) => {
   const db = readDb();
   res.json(db.customers);
+});
+
+app.get("/api/admin/storage", requireAdmin, (_req, res) => {
+  const db = readDb();
+  const stats = fs.statSync(DB_FILE);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    databaseFile: DB_FILE,
+    databaseBytes: stats.size,
+    backupCount: listDatabaseBackups().length,
+    productCount: db.products.length,
+    orderCount: db.orders.length,
+    customerCount: db.customers.length,
+    persistentVolumePath: IS_PRODUCTION ? "/data" : null,
+  });
+});
+
+app.get("/api/admin/backup", requireAdmin, (_req, res) => {
+  const db = readDb();
+  const date = new Date().toISOString().slice(0, 10);
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="bob-vault-backup-${date}.json"`,
+  );
+  res.send(JSON.stringify(db, null, 2));
+});
+
+app.post("/api/admin/restore", requireAdmin, (req, res) => {
+  if (!isValidDb(req.body)) {
+    return res.status(400).json({ error: "備份檔格式不正確，未進行還原。" });
+  }
+
+  writeDb(req.body);
+  res.json({
+    success: true,
+    productCount: req.body.products.length,
+    orderCount: req.body.orders.length,
+    customerCount: req.body.customers.length,
+  });
 });
 
 // Helper to encode a Buffer to standard Base32
@@ -804,18 +1045,24 @@ app.post("/api/admin/verify", (req, res) => {
     return res.status(400).json({ success: false, error: "請輸入登入密碼或動態驗證碼。" });
   }
 
-  // Get Admin secrets
-  const adminSecret = process.env.ADMIN_PASSCODE || "admin";
-  const totpSecret = process.env.ADMIN_TOTP_SECRET;
+  if (!ADMIN_PASSCODE && !ADMIN_TOTP_SECRET) {
+    return res.status(503).json({
+      success: false,
+      configurationRequired: true,
+      error: "管理員登入尚未設定，請先在 Zeabur 配置 ADMIN_PASSCODE 或 ADMIN_TOTP_SECRET。",
+    });
+  }
 
   // Verify standard passcode
-  if (passcode === adminSecret) {
+  if (ADMIN_PASSCODE && secureStringEqual(String(passcode), ADMIN_PASSCODE)) {
+    setAdminSessionCookie(res);
     return res.json({ success: true, method: "password" });
   }
 
   // Check TOTP if dynamic code is 6 digits long and ADMIN_TOTP_SECRET is configured
-  if (totpSecret && /^\d{6}$/.test(passcode)) {
-    if (verifyTOTP(passcode, totpSecret)) {
+  if (ADMIN_TOTP_SECRET && /^\d{6}$/.test(passcode)) {
+    if (verifyTOTP(passcode, ADMIN_TOTP_SECRET)) {
+      setAdminSessionCookie(res);
       return res.json({ success: true, method: "otp" });
     }
   }
@@ -823,12 +1070,23 @@ app.post("/api/admin/verify", (req, res) => {
   return res.json({ success: false, error: "身分與金鑰對對失敗，請檢查輸入。" });
 });
 
-// 11.6. Get Admin TOTP Configuration Details
-app.get("/api/admin/security-info", (req, res) => {
-  const rawTotpSecret = process.env.ADMIN_TOTP_SECRET || "";
+app.get("/api/admin/session", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ authenticated: isAdminAuthenticated(req) });
+});
+
+app.post("/api/admin/logout", (_req, res) => {
+  clearAdminSessionCookie(res);
+  res.json({ success: true });
+});
+
+// 11.6. Get Admin TOTP Configuration Details after authentication
+app.get("/api/admin/security-info", requireAdmin, (_req, res) => {
+  const rawTotpSecret = ADMIN_TOTP_SECRET;
   const isTotpEnabled = !!rawTotpSecret;
   const totpSecret = isTotpEnabled ? getNormalizedBase32Secret(rawTotpSecret) : "";
-  
+
+  res.setHeader("Cache-Control", "no-store");
   res.json({
     isTotpEnabled,
     totpSecret: isTotpEnabled ? totpSecret : "未配置 KEY (請至 .env 設定 ADMIN_TOTP_SECRET)",
@@ -837,7 +1095,7 @@ app.get("/api/admin/security-info", (req, res) => {
 });
 
 // 12. Smart AI Suggestion Route - server side using @google/genai
-app.post("/api/gemini/suggest", async (req, res) => {
+app.post("/api/gemini/suggest", requireAdmin, async (req, res) => {
   const { imageBase64, mimeType, descriptionInput } = req.body;
 
   if (!aiClient) {

@@ -18,3 +18,26 @@ View your app in AI Studio: https://ai.studio/apps/8b07731e-4307-4d01-9100-e6d74
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Deploy to Zeabur
+
+This repository is a full-stack Express + Vite application. Deploy the GitHub
+repository as the service source. The root `zbpack.json` explicitly selects the
+root `Dockerfile` so `/api/*` routes are served by Express.
+
+Before deploying, open the Zeabur service's **Volumes** tab and mount a Volume:
+
+- Volume ID: `bob-vault-data`
+- Mount Directory: `/data`
+
+Production data is stored in `/data/db.json`. Without this Volume, container
+restarts and deployments will reset runtime data. The server keeps the latest
+10 automatic JSON backups in `/data/backups`, and the admin settings page can
+download or restore a complete backup.
+
+Do not push a production backup to Git. Backup files can contain customer
+contact details, order receipts, and embedded product photos.
+
+Do not redeploy the AI Studio preview or Chrome-extension snapshot to the same
+Zeabur service. Those snapshots are static Vite builds and will replace the
+Express backend.
